@@ -204,7 +204,13 @@ Generate dynamic output contract from artifact using the template in
 ### Output Parsing (Strict)
 
 Codex returns `## CATEGORY SCORES` only. No `## SCORE` line.
-Total score is computed deterministically by Claude as the sum of category scores.
+Total score is computed deterministically by Claude as the sum of category scores,
+**capped at the theoretical maximum** from the agreed framework.
+
+If the raw category sum exceeds the theoretical max, the authoritative score is
+the max. Display as: `Score: {max}/{max} (raw: {sum}, capped at theoretical max)`.
+This prevents impossible scores where individual categories are valid but their
+sum exceeds the agreed ceiling.
 
 Validation steps:
 1. All required section headers present: `## CATEGORY SCORES`, `## CRITIQUES`,
@@ -212,7 +218,8 @@ Validation steps:
 2. Exact category-key matching against locked framework: same count, names match
    (case-insensitive, trimmed), no extras, no duplicates
 3. Each category score bounded by 0 to that category's weight
-4. Each critique has Evidence, Impact, Suggestion sub-fields
+4. Category sum capped at theoretical max (authoritative score = min(sum, max))
+5. Each critique has Evidence, Impact, Suggestion sub-fields
 
 Validation failure: retry ONCE with correction prompt specifying exact expected
 categories and format. Second failure: present raw output, mark non-authoritative,
