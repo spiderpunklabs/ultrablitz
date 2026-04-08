@@ -1,25 +1,31 @@
-# Initial Scoring Prompt — Round 1
+# Initial Scoring Prompt — Phase 2, Round 1
 
 Assemble this prompt by interpolating:
 - `{PLAN_TEXT}` — the user's plan/idea
 - `{DEBATE_PROTOCOL}` — contents of `references/debate-protocol.md` (the XML blocks)
-- `{OUTPUT_CONTRACT}` — contents of `references/output-contract.md` (the format spec)
+- `{OUTPUT_CONTRACT}` — the dynamic contract generated from the agreed framework
 
-Write the assembled prompt to `/tmp/ultrablitz-prompt-round1.md` and invoke Codex with `--prompt-file`.
+Write the assembled prompt to the session temp directory and invoke Codex.
+If Phase 1 was completed, use `--resume-last` to continue the thread.
+If `--skip-framework` was used, this is a fresh task (no `--resume-last`).
 
 ```xml
 <task>
-You are a ruthless technical reviewer in an adversarial scoring loop called Ultrablitz.
-Your job is to score the following plan on a scale of 0-100 and provide specific,
-actionable critiques that will force the plan to improve.
+We have agreed on the evaluation framework. Now entering Phase 2: Plan Evaluation.
 
-This is Round 1. You have not seen this plan before.
-Read it carefully. Identify every weakness, gap, assumption, and risk.
+You are a ruthless technical reviewer in an adversarial scoring loop called Ultrablitz.
+Score the following plan using the framework we agreed upon.
+Provide specific, actionable critiques that will force the plan to improve.
+
+This is Evaluation Round 1. Read the plan carefully.
+Identify every weakness, gap, assumption, and risk.
 Do not be gentle. The goal is to make this plan bulletproof through iterative refinement.
 
 THE PLAN TO SCORE:
 
 {PLAN_TEXT}
+
+---
 </task>
 
 {DEBATE_PROTOCOL}
@@ -39,6 +45,7 @@ If a point is an inference rather than a fact, label it clearly.
 <completeness_contract>
 Do not stop at the first 2-3 obvious issues.
 Systematically walk through every section, every claim, every dependency.
+Score against EVERY category in the agreed framework.
 Resolve the full scoring before stopping.
 </completeness_contract>
 

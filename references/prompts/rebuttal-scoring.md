@@ -1,19 +1,20 @@
-# Rebuttal Scoring Prompt — Round 2+
+# Rebuttal Scoring Prompt — Phase 2, Rounds 2+
 
-This is a delta-only prompt. Per `gpt-5-4-prompting` guidance, do NOT restate the full
-initial prompt. Codex retains context from previous rounds via `--resume-last`.
+Delta-only prompt. Codex retains context from previous rounds via `--resume-last`.
 
 Assemble the rebuttal text per `claude-debate-rules.md`, then submit via:
 - If rebuttal < 500 chars: pass as positional argument to `task --resume-last "..."`
-- If rebuttal >= 500 chars: write to `/tmp/ultrablitz-prompt-roundN.md` and use `task --resume-last --prompt-file ...`
+- If rebuttal >= 500 chars: write to session temp dir and use `task --resume-last --prompt-file ...`
 
-The rebuttal itself should contain Claude's per-critique responses and the updated plan.
+The rebuttal itself should contain Claude's per-critique responses (with lifecycle
+status updates) and the updated plan.
+
 Wrap the scoring instruction in this XML header before the rebuttal content:
 
 ```xml
 <task>
 The plan author has responded to your critiques with a rebuttal and updated plan below.
-Re-score the plan in its CURRENT state after their changes.
+Re-score the plan in its CURRENT state using the agreed framework.
 
 Scoring rules:
 - Raise category scores where feedback was well-addressed.
@@ -22,6 +23,8 @@ Scoring rules:
 - Flag any NEW problems introduced by their changes.
 - Do not repeat critiques that were adequately addressed.
 - The score must reflect the CURRENT state of the plan, not your opinion of the original.
+- Score against the agreed framework categories only.
+- Any score increase must cite which critique was resolved and what plan text changed.
 </task>
 
 <structured_output_contract>
