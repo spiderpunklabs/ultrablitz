@@ -288,8 +288,9 @@ Claude maintains a critique status ledger across rounds:
 ### Termination (Precedence Order)
 
 1. **Consensus** (mechanical): score within 3% of theoretical max AND zero
-   UNRESOLVED or REGRESSED critiques of severity CRITICAL or MAJOR AND zero
-   blocked score deltas in current round. All three required.
+   UNRESOLVED or REGRESSED critiques of ANY severity (CRITICAL, MAJOR, and MINOR —
+   all must be RESOLVED or PARTIALLY_RESOLVED) AND zero blocked score deltas in
+   current round. All three required. No findings may be skipped.
 2. **User abort**: stop immediately.
 3. **Round cap**: stop with current best (`--max-rounds`, default 5).
 4. **Stalemate**: score unchanged for 2 consecutive rounds.
