@@ -29,8 +29,8 @@ plan, Claude argues back, and they loop until mechanical consensus or round cap.
 
 Parse the user's input for:
 - **Plan text**: everything after the command trigger (or flags)
-- `--max-rounds N`: max Phase 2 rounds (default: 5, range: 2-20, hard cap: 20)
-- `--framework-rounds N`: max Phase 1 rounds (default: 3, range: 1-10, hard cap: 10)
+- `--max-rounds N`: soft target for Phase 2 rounds (default: 5). Debate auto-extends past this if findings remain unresolved, up to hard cap of 20.
+- `--framework-rounds N`: soft target for Phase 1 rounds (default: 3). Auto-extends up to hard cap of 10.
 - `--skip-framework`: skip Phase 1, use default rubric (generic 4x25 or custom from `.ultrablitz.json`)
 - `--cleanup`: list and interactively delete incomplete sessions, then exit
 - `--effort <none|minimal|low|medium|high|xhigh>`: passed to Codex if set
@@ -292,7 +292,9 @@ Claude maintains a critique status ledger across rounds:
    all must be RESOLVED or PARTIALLY_RESOLVED) AND zero blocked score deltas in
    current round. All three required. No findings may be skipped.
 2. **User abort**: stop immediately.
-3. **Round cap**: stop with current best (`--max-rounds`, default 5).
+3. **Hard cap**: stop at hard limit (Phase 1: 10, Phase 2: 20). If unresolved
+   findings remain, list them as "Unresolved at hard cap" in the final summary.
+   The soft default (`--max-rounds`) does NOT stop the debate if findings remain.
 4. **Stalemate**: score unchanged for 2 consecutive rounds.
 5. **Regression**: score decreased for 2 consecutive rounds → **WARNING** displayed
    to user, who chooses continue or abort. Not automatic termination.
@@ -482,17 +484,24 @@ If something goes wrong, the user can always force-clear:
 ! rm /tmp/ultrablitz-gate-*.lock /tmp/ultrablitz-gate-*.confirmed 2>/dev/null
 ```
 
-## Hard Iteration Caps
+## Iteration Caps
 
-These caps are absolute and cannot be overridden by flags:
+| Phase | Soft Default | Hard Cap |
+|-------|-------------|----------|
+| Phase 1 (Framework) | 3 | **10** |
+| Phase 2 (Evaluation) | 5 | **20** |
 
-| Phase | Default | User Range | Hard Cap |
-|-------|---------|-----------|----------|
-| Phase 1 (Framework) | 3 | 1-10 | **10** |
-| Phase 2 (Evaluation) | 5 | 2-20 | **20** |
+**Defaults are soft targets, not stop signals.** If unresolved findings remain when
+the default round count is reached, the debate CONTINUES automatically up to the
+hard cap. Rounds are never cut short to hit a default — every finding must be
+addressed before consensus.
 
-If `--framework-rounds` exceeds 10 or `--max-rounds` exceeds 20, clamp to the cap
-with a warning. These caps exist to prevent unbounded token consumption.
+- `--framework-rounds N` and `--max-rounds N` set the soft target (user suggestion).
+- If N exceeds the hard cap, clamp with a warning.
+- The debate stops ONLY when: consensus is reached (all findings resolved), the
+  hard cap is hit, the user aborts, or stalemate is detected.
+- If the hard cap is reached with findings still unresolved, display them explicitly
+  in the final summary as "Unresolved at hard cap."
 
 ## Critical Rules
 
