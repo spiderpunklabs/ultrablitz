@@ -13,6 +13,9 @@ description: >-
 
 # Ultrablitz — Adversarial Debate Loop
 
+> **Requires**: [openai-codex plugin](https://github.com/openai/codex-plugin-cc) for Claude Code.
+> Install via `/install-plugin openai-codex` and run `/codex:setup` before first use.
+
 Two-phase adversarial refinement between Claude and Codex.
 
 **Phase 1 — Framework Negotiation**: Claude and Codex debate the evaluation
