@@ -29,8 +29,8 @@ plan, Claude argues back, and they loop until mechanical consensus or round cap.
 
 Parse the user's input for:
 - **Plan text**: everything after the command trigger (or flags)
-- `--max-rounds N`: max Phase 2 rounds (default: 5, range: 2-10)
-- `--framework-rounds N`: max Phase 1 rounds (default: 3, range: 1-5)
+- `--max-rounds N`: max Phase 2 rounds (default: 5, range: 2-20, hard cap: 20)
+- `--framework-rounds N`: max Phase 1 rounds (default: 3, range: 1-10, hard cap: 10)
 - `--skip-framework`: skip Phase 1, use default rubric (generic 4x25 or custom from `.ultrablitz.json`)
 - `--cleanup`: list and interactively delete incomplete sessions, then exit
 - `--effort <none|minimal|low|medium|high|xhigh>`: passed to Codex if set
@@ -394,10 +394,110 @@ Unresolved Disagreements: (if any)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ```
 
+## Post-Debate Confirmation Gate
+
+After the debate completes and the ULTRABLITZ — COMPLETE summary is displayed,
+a mechanical confirmation gate activates to prevent unintended implementation.
+
+### Gate Activation
+
+1. Write the gate lock file as the LAST Bash call (uses noclobber for atomicity):
+   ```bash
+   set -C && echo '{"runId":"UUID","repoRoot":"PATH","createdAt":"ISO-8601","unlockCode":"UUID","pid":PID}' > /tmp/ultrablitz-gate-{REPO_HASH}.lock
+   ```
+   - `REPO_HASH`: first 16 chars of SHA256 of repo root (or canonical CWD if non-git)
+   - `unlockCode`: fresh UUID generated at gate creation time
+   - If the file already exists (noclobber fails): an active gate exists for this repo.
+     Error: "An active ultrablitz gate exists. Complete or clear it first."
+
+2. The PreToolUse hook (`ultrablitz-gate.sh`) now blocks ALL Edit, Write,
+   NotebookEdit, and Bash calls while the lock exists.
+
+3. Read, Grep, Glob, AskUserQuestion, Agent, WebSearch, WebFetch remain available.
+
+### User Confirmation
+
+Use AskUserQuestion immediately after the lock is created:
+
+**"The refined plan is ready. How would you like to proceed?"**
+
+Options:
+- **Execute** — "Implement the refined plan now"
+- **Modify** — "I want to make changes first"
+- **Discard** — "Don't implement, keep the refinement for reference"
+
+### Gate Resolution
+
+**On Execute:**
+1. Read the lock file to obtain the `unlockCode`.
+2. Write the confirmation file (the hook has a narrow, single-use carve-out for this):
+   ```
+   /tmp/ultrablitz-gate-{REPO_HASH}.confirmed
+   Content: {"runId":"UUID","unlockCode":"UUID"}
+   ```
+3. The hook validates the confirmation token against the lock pre-execution.
+   If valid: gate clears. All tools become available.
+4. As the first post-gate action, remove both lock and confirmation files (best-effort cleanup).
+5. Proceed with implementation of the refined plan.
+
+**On Modify:**
+- Lock stays active. Discuss changes with user.
+- When ready, re-present the AskUserQuestion gate with the modified plan.
+- Each modification cycle gets a fresh gate prompt.
+
+**On Discard:**
+- Run is closed. No implementation authority carried forward.
+- Instruct user to clear the lock: `! rm /tmp/ultrablitz-gate-*.lock /tmp/ultrablitz-gate-*.confirmed 2>/dev/null`
+- To implement later, user must make a new explicit request.
+
+### Gate Rules
+
+- The gate fires after ANY debate termination that produces a usable refined plan
+  (consensus, round cap, stalemate, user stops debate).
+- The gate does NOT fire when the user cancels ultrablitz entirely or Codex fails fatally.
+- **Implementation before confirmation is INVALID.** If the next assistant action
+  after the final summary would move toward implementation without gate clearance,
+  the hook blocks it mechanically.
+- The gate always reflects the CURRENT plan state. If modifications occurred,
+  regenerate the summary before re-presenting.
+
+### Singleton Invariant
+
+One active gate per repo. Enforced atomically via `set -C` (noclobber) on lock creation.
+Pre-flight also checks for existing locks as an advisory early warning:
+- Lock exists + <4h old + PID alive → refuse to start new run
+- Lock exists + <4h old + PID dead → warn (likely crashed), offer to clear
+- Lock exists + >4h old → warn (stale), offer to clear
+
+### Stale Lock Policy
+
+Stale locks (>4h) are NEVER auto-allowed. The hook denies with clear instructions
+to manually remove. No silent policy expiry.
+
+### Recovery
+
+If something goes wrong, the user can always force-clear:
+```
+! rm /tmp/ultrablitz-gate-*.lock /tmp/ultrablitz-gate-*.confirmed 2>/dev/null
+```
+
+## Hard Iteration Caps
+
+These caps are absolute and cannot be overridden by flags:
+
+| Phase | Default | User Range | Hard Cap |
+|-------|---------|-----------|----------|
+| Phase 1 (Framework) | 3 | 1-10 | **10** |
+| Phase 2 (Evaluation) | 5 | 2-20 | **20** |
+
+If `--framework-rounds` exceeds 10 or `--max-rounds` exceeds 20, clamp to the cap
+with a warning. These caps exist to prevent unbounded token consumption.
+
 ## Critical Rules
 
 - **NEVER** add `--write` to any Codex invocation.
-- **NEVER** modify files in the user's repository.
+- **NEVER** modify files in the user's repository during the debate.
+- **NEVER** begin implementation without gate confirmation.
 - **ALWAYS** present Codex's raw output transparently.
 - **ALWAYS** maintain the current refined plan state across rounds.
 - The agreed framework is LOCKED during Phase 2.
