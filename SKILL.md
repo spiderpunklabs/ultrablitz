@@ -209,8 +209,8 @@ Total score is computed deterministically by Claude as the sum of category score
 
 If the raw category sum exceeds the theoretical max, the authoritative score is
 the max. Display as: `Score: {max}/{max} (raw: {sum}, capped at theoretical max)`.
-This prevents impossible scores where individual categories are valid but their
-sum exceeds the agreed ceiling.
+Category scores are labeled **"diagnostic"** when a cap is active — the authoritative
+total is the capped number, not the raw sum.
 
 Validation steps:
 1. All required section headers present: `## CATEGORY SCORES`, `## CRITIQUES`,
@@ -224,6 +224,46 @@ Validation steps:
 Validation failure: retry ONCE with correction prompt specifying exact expected
 categories and format. Second failure: present raw output, mark non-authoritative,
 ask user to continue or abort.
+
+### Framework Consistency Check
+
+A cap event triggers a **framework consistency check** if ANY of these fire:
+- **Magnitude (rubric)**: overflow exceeds the weight of the smallest category
+- **Magnitude (percentage)**: overflow >= ceil(0.05 * theoretical_max)
+- **Recurrence**: 2+ cap events across rounds
+
+When triggered, display: "Category scores sum to {sum} but theoretical max is {max}.
+Either categories are over-scored or the theoretical max is too low."
+This **blocks consensus** until resolved — via recalibration motion or explicit acceptance.
+
+For small overshoots that don't trigger the check (below all thresholds), the cap
+is applied silently. This represents single-category-scale variance, not a framework defect.
+
+### Theoretical Max Recalibration
+
+The theoretical max is **locked by default** after Phase 1. It can be adjusted during
+Phase 2 ONLY through a formal recalibration motion:
+
+**Valid grounds (exactly two):**
+1. **Ceiling too low** — critique demonstrates a previously excluded capability or
+   plan path consistent with the agreed domain
+2. **Ceiling too high** — critique demonstrates a newly recognized hard constraint
+   that materially reduces achievable performance
+
+**Procedure:**
+1. Either evaluator proposes a recalibration motion with stated ground and evidence
+2. Both evaluators must agree. If they disagree: round marked "framework disputed,"
+   the pre-motion max remains authoritative for this round
+3. The user is the tiebreaker: accept the motion, reject it, or set a custom max
+   (custom max must state one of the two grounds with reasoning — auditable, not ad hoc)
+4. If user doesn't respond (interrupted): pre-motion max holds (conservative default)
+
+**Recording:**
+- Prior max, new max, ground cited, reason, whether prior scores need reinterpretation
+- Limited to 1 recalibration per evaluation unless new objective evidence surfaces
+
+**Auto-trigger:** a framework consistency check (from cap events) can initiate a
+recalibration review even if neither evaluator explicitly proposes one.
 
 ### Score Reconciliation (ENFORCED)
 
