@@ -46,28 +46,21 @@ Flags always override implied intent.
 
 Check in priority order:
 
+Resolve the companion path using the helper:
+
 ```bash
-# 1. Explicit config (highest priority)
-# Check ULTRABLITZ_CODEX_COMPANION env var
-# or "codex_companion_path" in .ultrablitz.json
-
-# 2. Plugin context
-CODEX_COMPANION="${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs"
-
-# 3. Cache (highest version)
-if [ ! -f "$CODEX_COMPANION" ]; then
-  CODEX_COMPANION=$(ls ~/.claude/plugins/cache/openai-codex/codex/*/scripts/codex-companion.mjs 2>/dev/null | sort -V | tail -1)
-fi
-
-# 4. Marketplace source
-if [ ! -f "$CODEX_COMPANION" ]; then
-  CODEX_COMPANION=~/.claude/plugins/marketplaces/openai-codex/plugins/codex/scripts/codex-companion.mjs
-fi
+CODEX_COMPANION=$(bash "$(dirname "$0")/hooks/ultrablitz-utils.sh" resolve-companion)
 ```
 
-Each step: check existence AND executability.
-Log resolved path and version at pre-flight.
-If none found: hard fail with diagnostic listing all checked paths.
+The helper checks cache (highest version) then marketplace, verifying existence
+and executability. If neither found, it fails with a diagnostic listing checked paths.
+
+Only two companion paths are supported:
+- `~/.claude/plugins/cache/openai-codex/codex/*/scripts/codex-companion.mjs`
+- `~/.claude/plugins/marketplaces/openai-codex/plugins/codex/scripts/codex-companion.mjs`
+
+No custom companion paths. If you have a non-standard install, add a manual
+permission entry for your path.
 
 ### 2. Verify Codex Is Ready
 
