@@ -334,17 +334,65 @@ Claude maintains a critique status ledger across rounds:
 
 ### Termination (Precedence Order)
 
+**Core invariant: no termination path silently drops unresolved findings.**
+Every path either requires all findings RESOLVED, or gets explicit user sign-off.
+PARTIALLY_RESOLVED counts as unresolved for termination purposes (documentary only).
+
 1. **Consensus** (mechanical): score within 3% of theoretical max AND zero
    UNRESOLVED or REGRESSED critiques of ANY severity (CRITICAL, MAJOR, and MINOR —
-   all must be RESOLVED or PARTIALLY_RESOLVED) AND zero blocked score deltas in
-   current round. All three required. No findings may be skipped.
-2. **User abort**: stop immediately.
-3. **Hard cap**: stop at hard limit (Phase 1: 10, Phase 2: 20). If unresolved
-   findings remain, list them as "Unresolved at hard cap" in the final summary.
-   The soft default (`--max-rounds`) does NOT stop the debate if findings remain.
-4. **Stalemate**: score unchanged for 2 consecutive rounds.
-5. **Regression**: score decreased for 2 consecutive rounds → **WARNING** displayed
-   to user, who chooses continue or abort. Not automatic termination.
+   all must be fully RESOLVED) AND zero blocked score deltas in current round.
+   All three required. No findings may be skipped.
+2. **User abort**: stop immediately. Final summary MUST include all unresolved
+   findings marked "terminated by user abort." No silent state drop.
+3. **Hard cap** (Phase 1: 10, Phase 2: 20, absolute):
+   - If ALL findings resolved: normal termination.
+   - If unresolved findings remain: ask user via AskUserQuestion:
+     "Hard cap reached with {N} unresolved findings. How to proceed?"
+     - "Accept as-is" — terminate, unresolved listed in summary
+     - "Resolve manually" — user addresses each finding, then terminate
+   - The soft default (`--max-rounds`) does NOT stop the debate if findings remain.
+4. **Stalemate** (score unchanged 2 consecutive rounds):
+   - If ALL findings resolved: true stalemate, terminate normally.
+   - If unresolved findings remain: NOT a stalemate. Escalate to user:
+     "Score is stable but {N} findings remain unresolved."
+     Display each unresolved finding with both positions (Claude vs Codex).
+     User resolves each finding one at a time in severity order (CRITICAL first,
+     then MAJOR, then MINOR, stable within severity by critique ID):
+     - "Accept Claude's position"
+     - "Accept Codex's position"
+     - "Provide your own resolution"
+     If interrupted mid-resolution: on resume, reprompt only unresolved findings.
+     After ALL disposed: terminate with user-mediated resolutions noted.
+5. **Regression** (score decreased 2 consecutive rounds):
+   Display: "Score regressed for 2 rounds. {N} findings remain unresolved."
+   Show all unresolved findings. Ask user:
+   - "Continue debating" — resume, regression counter resets (max 2 continues per session)
+   - "Accept current state" — terminate, unresolved listed
+   - "Resolve manually" — user addresses each finding, then terminate
+   After 2nd "Continue," the Continue option is removed — only Accept or Resolve.
+
+### Post-User-Resolution (Universal)
+
+After user resolves all findings (via hard cap, stalemate, or regression paths):
+recompute critique ledger → all findings must be RESOLVED → terminate with final
+summary. No re-scoring, no debate resumption. User resolutions are final.
+
+### Per-Finding Auto-Escalation (Mid-Debate)
+
+Independent of global termination, individual findings auto-escalate to user when:
+- **Oscillation**: finding regressed 2+ times (RESOLVED → REGRESSED twice) →
+  escalate as tie. User picks one position. Decision persisted, debate resumes.
+- **Stuck**: finding unchanged (same positions from both sides) for 3 consecutive
+  rounds → escalate as tie. Same flow.
+
+Per-finding escalation resolves ONE finding and resumes debate. It does NOT trigger
+global termination. The resolved finding is RESOLVED (user-mediated) and won't be
+re-raised absent materially new evidence.
+
+**Re-raise gate (mechanical)**: a user-resolved finding may only be re-raised if
+Codex cites specific plan text added or modified AFTER the user's resolution round.
+Claude checks: does the critique reference a plan diff from a later round? If yes:
+re-raise allowed with fresh linked ID (e.g., UB-7b). If no: rejected automatically.
 
 ### Budget Controls
 
