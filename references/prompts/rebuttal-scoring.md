@@ -4,7 +4,10 @@ Delta-only prompt. Codex retains context from previous rounds via `--resume-last
 
 Assemble the rebuttal text per `claude-debate-rules.md`, then submit via:
 - If rebuttal < 500 chars: pass as positional argument to `task --resume-last "..."`
-- If rebuttal >= 500 chars: write to session temp dir and use `task --resume-last --prompt-file ...`
+- If rebuttal >= 500 chars: write to `<session>/p2-r<N>-rebuttal.md`
+  (always `.md`) and use `task --resume-last --prompt-file ...`
+
+Run `pre-codex-validate <runId>` immediately before the Codex call.
 
 The rebuttal itself should contain Claude's per-critique responses (with lifecycle
 status updates) and the updated plan.
