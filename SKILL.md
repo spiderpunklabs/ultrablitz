@@ -100,7 +100,7 @@ names. Files with any other extension are protocol violations.
 /tmp/ultrablitz-<runId>/
   session.json                          # session state — JSON
   completed                             # extensionless completion marker
-  cleanup.error                         # extensionless error log (only on cleanup failure)
+  cleanup.error                         # error log (only on cleanup failure)
   plan-full.md                          # full plan when digested (Stage 1 overflow)
   p1-r<N>-framework-proposal.md         # Phase 1 prompts to Codex
   p1-r<N>-claude-response.md            # Phase 1 rebuttals to Codex
@@ -650,7 +650,7 @@ addressed before consensus.
 - **ALWAYS** maintain the current refined plan state across rounds.
 - **All content artifacts** written under `/tmp/ultrablitz-<runId>/` MUST use
   the `.md` extension. State files use `session.json` and `completed`. The
-  `cleanup.error` file (extensionless) is written only by `trash-session` on
+  `cleanup.error` file is written only by `trash-session` on
   failure. Gate files (`/tmp/ultrablitz-gate-*.{lock,confirmed}`) keep their
   semantic extensions and are unaffected. Any other extension under the
   session directory is a protocol violation.

@@ -116,7 +116,14 @@ case "$SUBCOMMAND" in
     CREATED=$(date -u +%FT%TZ)
     PID=$$
     set -C
-    printf '%s\n' "{\"runId\":\"$RUNID\",\"repoRoot\":\"$REPO\",\"createdAt\":\"$CREATED\",\"unlockCode\":\"$CODE\",\"pid\":$PID}" > "$LOCK" 2>/dev/null \
+    jq -nc \
+      --arg runId "$RUNID" \
+      --arg repoRoot "$REPO" \
+      --arg createdAt "$CREATED" \
+      --arg unlockCode "$CODE" \
+      --argjson pid "$PID" \
+      '{runId:$runId,repoRoot:$repoRoot,createdAt:$createdAt,unlockCode:$unlockCode,pid:$pid}' \
+      > "$LOCK" 2>/dev/null \
       || { echo "create-gate-lock: lock exists at $LOCK" >&2; exit 4; }
     echo "$LOCK"
     ;;
@@ -131,7 +138,7 @@ case "$SUBCOMMAND" in
         echo "completed $dir"
         continue
       fi
-      HAS_BAD=$(find "$dir" -maxdepth 1 -type f \
+      HAS_BAD=$(find "$dir" -mindepth 1 -maxdepth 1 \
         ! -name "*.md" ! -name "session.json" \
         ! -name "completed" ! -name "cleanup.error" -print -quit)
       AGE_HRS=$(( ($(date +%s) - $(stat -f %B "$dir" 2>/dev/null || echo 0)) / 3600 ))
