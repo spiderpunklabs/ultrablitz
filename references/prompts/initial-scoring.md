@@ -5,9 +5,11 @@ Assemble this prompt by interpolating:
 - `{DEBATE_PROTOCOL}` — contents of `references/debate-protocol.md` (the XML blocks)
 - `{OUTPUT_CONTRACT}` — the dynamic contract generated from the agreed framework
 
-Write the assembled prompt to the session temp directory and invoke Codex.
-If Phase 1 was completed, use `--resume-last` to continue the thread.
-If `--skip-framework` was used, this is a fresh task (no `--resume-last`).
+Write the assembled prompt to `<session>/p2-r1-initial-scoring.md`
+(always `.md`) and invoke Codex. If Phase 1 was completed, use
+`--resume-last` to continue the thread. If `--skip-framework` was used,
+this is a fresh task (no `--resume-last`). Run
+`pre-codex-validate <runId>` immediately before the Codex call.
 
 ```xml
 <task>

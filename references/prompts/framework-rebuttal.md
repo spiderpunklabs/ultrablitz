@@ -6,6 +6,9 @@ Codex retains context via `--resume-last`.
 Claude responds to Codex's framework critique, then Codex re-evaluates.
 Loop continues until both sides reach ACCEPT.
 
+Write the rebuttal to `<session>/p1-r<N>-claude-response.md` (always `.md`).
+Run `pre-codex-validate <runId>` immediately before the Codex call.
+
 ```xml
 <task>
 The framework proposer has responded to your critique.

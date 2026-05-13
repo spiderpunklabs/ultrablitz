@@ -79,16 +79,66 @@ Then exit — do not start a new debate.
 
 ### 4. Create Session Directory
 
-Create `/tmp/ultrablitz-$(uuidgen)/` with mode 700.
-All prompt files and session state go in this directory.
-Store: runId (UUID), createdAt (ISO-8601), lastActiveAt (updated each round).
+Create the session via the helper (do NOT call `mkdir` directly):
 
-### 5. Clean Completed Sessions
+```bash
+session_dir=$(bash "$(dirname "$0")/hooks/ultrablitz-utils.sh" create-session)
+runId=$(basename "$session_dir" | sed 's/^ultrablitz-//')
+```
 
-Remove any `/tmp/ultrablitz-*` directories that have a `completed` marker.
-Incomplete sessions are NEVER auto-deleted regardless of age.
+The helper performs `mkdir -m 700 /tmp/ultrablitz-<runId>/` and prints the
+full path on stdout. `runId` is the canonical identifier used in: every
+artifact filename, the gate lock JSON `runId` field, the gate confirmation
+JSON `runId` field, and every helper subcommand argument that takes a
+session identifier. Do not invent alternate identifiers for the session.
 
-### 6. Load Reference Files
+Artifacts in this directory follow the canonical naming schema. Content
+artifacts MUST use `.md`. State/control artifacts keep their semantic
+names. Files with any other extension are protocol violations.
+
+```
+/tmp/ultrablitz-<runId>/
+  session.json                          # session state — JSON
+  completed                             # extensionless completion marker
+  cleanup.error                         # error log (only on cleanup failure)
+  plan-full.md                          # full plan when digested (Stage 1 overflow)
+  p1-r<N>-framework-proposal.md         # Phase 1 prompts to Codex
+  p1-r<N>-claude-response.md            # Phase 1 rebuttals to Codex
+  p2-r1-initial-scoring.md              # Phase 2 round 1 prompt to Codex
+  p2-r<N>-rebuttal.md                   # Phase 2 rounds 2+ prompts to Codex (N >= 2)
+```
+
+Store in `session.json`: runId (UUID), createdAt (ISO-8601), lastActiveAt
+(updated each round).
+
+### 5. Legacy Scan
+
+Before any other action, run:
+
+```bash
+bash "$(dirname "$0")/hooks/ultrablitz-utils.sh" legacy-scan
+```
+
+The helper classifies each pre-existing `/tmp/ultrablitz-*/` as one of
+`conforming`, `completed`, `nonconforming-older-than-4h`, or
+`nonconforming-recent`. Only `completed` sessions are eligible for
+auto-trash via `cleanup-completed`. Non-conforming sessions are surfaced
+to the user; the skill never touches them.
+
+### 6. Clean Completed Sessions
+
+```bash
+bash "$(dirname "$0")/hooks/ultrablitz-utils.sh" cleanup-completed
+```
+
+This delegates each completed session to `trash-session`, which moves the
+directory to `~/.Trash/ultrablitz-<runId>-<ts>-<pid>/` (with `-2,-3,...`
+suffix retry on collision). Failures are surfaced; the operator is shown
+both successful and failed counts. Incomplete sessions are NEVER
+auto-deleted regardless of age (this guarantee is preserved from the prior
+contract).
+
+### 7. Load Reference Files
 
 Read all before starting:
 - `references/debate-protocol.md`
@@ -598,6 +648,23 @@ addressed before consensus.
 - **NEVER** begin implementation without gate confirmation.
 - **ALWAYS** present Codex's raw output transparently.
 - **ALWAYS** maintain the current refined plan state across rounds.
+- **All content artifacts** written under `/tmp/ultrablitz-<runId>/` MUST use
+  the `.md` extension. State files use `session.json` and `completed`. The
+  `cleanup.error` file is written only by `trash-session` on
+  failure. Gate files (`/tmp/ultrablitz-gate-*.{lock,confirmed}`) keep their
+  semantic extensions and are unaffected. Any other extension under the
+  session directory is a protocol violation.
+- **Every Codex invocation** (`task` or `--resume-last`, in BOTH phases) MUST
+  be preceded by `bash "$(dirname "$0")/hooks/ultrablitz-utils.sh" pre-codex-validate "$runId"`.
+  Nonzero exit aborts the round and surfaces the offending files. Run
+  `validate-session` immediately after each prompt-file Write so contract
+  violations are caught at the write site, not just before Codex consumption.
+- **Use the helper** for: session creation (`create-session`), session cleanup
+  (`trash-session`, `cleanup-completed`), gate-lock creation
+  (`create-gate-lock`), and validation (`validate-session`,
+  `pre-codex-validate`). Do NOT call `mkdir`, `mv`, `rm`, or `set -C` on
+  ultrablitz paths directly — every shell side-effect must go through a
+  helper subcommand whose permission rule is explicitly granted.
 - The agreed framework is LOCKED during Phase 2.
 - Authoritative scores are always evidence-backed via reconciliation.
 - Clean up session temp directory after loop completes (mark completed).

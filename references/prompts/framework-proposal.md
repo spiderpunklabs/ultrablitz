@@ -7,7 +7,9 @@ Assemble this prompt by interpolating:
 - `{PLAN_SUMMARY}` — a brief summary of the plan/idea to be evaluated (enough context for Codex to understand the domain)
 - `{DEBATE_PROTOCOL}` — tone/stance blocks from `references/debate-protocol.md`
 
-Write the assembled prompt to the session temp directory and invoke Codex with `--prompt-file`.
+Write the assembled prompt to `<session>/p1-r<N>-framework-proposal.md`
+(always `.md`) and invoke Codex with `--prompt-file`. Run
+`pre-codex-validate <runId>` immediately before the Codex call.
 
 ```xml
 <task>
