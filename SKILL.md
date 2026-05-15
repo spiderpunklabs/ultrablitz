@@ -29,8 +29,8 @@ plan, Claude argues back, and they loop until mechanical consensus or round cap.
 
 Parse the user's input for:
 - **Plan text**: everything after the command trigger (or flags)
-- `--max-rounds N`: soft target for Phase 2 rounds (default: 5). Debate auto-extends past this if findings remain unresolved, up to hard cap of 20.
-- `--framework-rounds N`: soft target for Phase 1 rounds (default: 3). Auto-extends up to hard cap of 10.
+- `--max-rounds N`: soft target for Phase 2 rounds (default: 5). Debate auto-extends past this if findings remain unresolved, up to hard cap of 10.
+- `--framework-rounds N`: soft target for Phase 1 rounds (default: 3). Auto-extends up to hard cap of 5.
 - `--skip-framework`: skip Phase 1, use default rubric (generic 4x25 or custom from `.ultrablitz.json`)
 - `--cleanup`: list and interactively delete incomplete sessions, then exit
 - `--effort <none|minimal|low|medium|high|xhigh>`: passed to Codex if set
@@ -323,19 +323,11 @@ After each Codex scoring round, Claude performs reconciliation before displaying
 
 ### Critique Lifecycle
 
-Claude maintains a critique status ledger across rounds:
-
-| Status | Meaning |
-|--------|---------|
-| UNRESOLVED | Active critique, not yet addressed |
-| PARTIALLY_RESOLVED | Addressed but fix is incomplete |
-| RESOLVED | Fully addressed with plan change |
-| REGRESSED | Previously resolved, re-opened with evidence |
-
-- Codex CAN re-raise a previously addressed critique if it provides new evidence
-  or argues the fix was inadequate.
-- Pure recycling (same concern, no new evidence, plan text changed in that area)
-  is flagged by Claude and not re-addressed.
+Claude maintains a critique status ledger across rounds. See
+`references/claude-debate-rules.md` for the four states (UNRESOLVED,
+PARTIALLY_RESOLVED, RESOLVED, REGRESSED) and their definitions — that is the
+authoritative source. Re-raising a previously addressed critique is allowed
+only with new evidence; pure recycling is flagged by Claude and not re-addressed.
 
 ### Anti-Gaming Controls
 
@@ -387,7 +379,7 @@ PARTIALLY_RESOLVED counts as unresolved for termination purposes (documentary on
    All three required. No findings may be skipped.
 2. **User abort**: stop immediately. Final summary MUST include all unresolved
    findings marked "terminated by user abort." No silent state drop.
-3. **Hard cap** (Phase 1: 10, Phase 2: 20, absolute):
+3. **Hard cap** (Phase 1: 5, Phase 2: 10, absolute):
    - If ALL findings resolved: normal termination.
    - If unresolved findings remain: ask user via AskUserQuestion:
      "Hard cap reached with {N} unresolved findings. How to proceed?"
@@ -626,8 +618,8 @@ If something goes wrong, the user can always force-clear:
 
 | Phase | Soft Default | Hard Cap |
 |-------|-------------|----------|
-| Phase 1 (Framework) | 3 | **10** |
-| Phase 2 (Evaluation) | 5 | **20** |
+| Phase 1 (Framework) | 3 | **5** |
+| Phase 2 (Evaluation) | 5 | **10** |
 
 **Defaults are soft targets, not stop signals.** If unresolved findings remain when
 the default round count is reached, the debate CONTINUES automatically up to the
@@ -655,16 +647,16 @@ addressed before consensus.
   semantic extensions and are unaffected. Any other extension under the
   session directory is a protocol violation.
 - **Every Codex invocation** (`task` or `--resume-last`, in BOTH phases) MUST
-  be preceded by `bash "$(dirname "$0")/hooks/ultrablitz-utils.sh" pre-codex-validate "$runId"`.
+  be preceded by `bash "$(dirname "$0")/hooks/ultrablitz-utils.sh" validate-session "$runId"`.
   Nonzero exit aborts the round and surfaces the offending files. Run
   `validate-session` immediately after each prompt-file Write so contract
   violations are caught at the write site, not just before Codex consumption.
 - **Use the helper** for: session creation (`create-session`), session cleanup
   (`trash-session`, `cleanup-completed`), gate-lock creation
-  (`create-gate-lock`), and validation (`validate-session`,
-  `pre-codex-validate`). Do NOT call `mkdir`, `mv`, `rm`, or `set -C` on
-  ultrablitz paths directly — every shell side-effect must go through a
-  helper subcommand whose permission rule is explicitly granted.
+  (`create-gate-lock`), and validation (`validate-session`). Do NOT call
+  `mkdir`, `mv`, `rm`, or `set -C` on ultrablitz paths directly — every shell
+  side-effect must go through a helper subcommand whose permission rule is
+  explicitly granted.
 - The agreed framework is LOCKED during Phase 2.
 - Authoritative scores are always evidence-backed via reconciliation.
 - Clean up session temp directory after loop completes (mark completed).
