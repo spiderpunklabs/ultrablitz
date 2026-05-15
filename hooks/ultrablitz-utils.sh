@@ -2,7 +2,7 @@
 # ultrablitz-utils.sh — Helper utilities for ultrablitz skill
 # Exact subcommands only: repo-hash, cleanup-completed, cleanup-interactive,
 # resolve-companion, create-session, trash-session, validate-session,
-# pre-codex-validate, create-gate-lock, legacy-scan
+# create-gate-lock, legacy-scan
 set -euo pipefail
 
 SUBCOMMAND="${1:-}"
@@ -96,11 +96,6 @@ case "$SUBCOMMAND" in
       exit 3
     fi
     echo "ok"
-    ;;
-
-  pre-codex-validate)
-    # Single integration point Claude calls before every Codex task/resume.
-    exec "$0" validate-session "${2:-}"
     ;;
 
   create-gate-lock)
@@ -211,7 +206,7 @@ case "$SUBCOMMAND" in
 
   *)
     echo "ultrablitz-utils.sh: unknown subcommand '$SUBCOMMAND'" >&2
-    echo "Usage: ultrablitz-utils.sh {repo-hash|cleanup-completed|cleanup-interactive|resolve-companion|create-session|trash-session|validate-session|pre-codex-validate|create-gate-lock|legacy-scan}" >&2
+    echo "Usage: ultrablitz-utils.sh {repo-hash|cleanup-completed|cleanup-interactive|resolve-companion|create-session|trash-session|validate-session|create-gate-lock|legacy-scan}" >&2
     exit 1
     ;;
 esac
