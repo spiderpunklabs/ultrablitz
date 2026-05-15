@@ -42,44 +42,33 @@ Flags always override implied intent.
 
 ## Pre-Flight
 
-### 1. Resolve Codex Companion Path
+Four steps. Execute in order before Phase 1.
 
-Check in priority order:
-
-Resolve the companion path using the helper:
+### 1. Resolve Codex Companion
 
 ```bash
 CODEX_COMPANION=$(bash "$(dirname "$0")/hooks/ultrablitz-utils.sh" resolve-companion)
 ```
 
-The helper checks cache (highest version) then marketplace, verifying existence
-and executability. If neither found, it fails with a diagnostic listing checked paths.
+The helper checks the openai-codex plugin cache (highest version) then the
+marketplace, verifying existence and executability. If neither is found it
+fails with a diagnostic listing the paths checked. Only those two locations
+are supported.
 
-Only two companion paths are supported:
-- `~/.claude/plugins/cache/openai-codex/codex/*/scripts/codex-companion.mjs`
-- `~/.claude/plugins/marketplaces/openai-codex/plugins/codex/scripts/codex-companion.mjs`
-
-No custom companion paths. If you have a non-standard install, add a manual
-permission entry for your path.
-
-### 2. Verify Codex Is Ready
+### 2. Verify Codex Is Ready (and handle `--cleanup`)
 
 ```bash
 node "$CODEX_COMPANION" setup --json
 ```
 
-If not ready, direct user to `/codex:setup` and stop.
+If not ready, direct the user to `/codex:setup` and stop.
 
-### 3. Handle --cleanup (if set)
+If `--cleanup` is set: run
+`bash "$(dirname "$0")/hooks/ultrablitz-utils.sh" cleanup-interactive`
+to list incomplete `/tmp/ultrablitz-*/` sessions; prompt per session
+(`y/n/all`); then exit without starting a new debate.
 
-List all `/tmp/ultrablitz-*` directories that are incomplete (no `completed` marker).
-Display: runId, createdAt, lastActiveAt, round count.
-Prompt per session: "Delete session {runId} from {date}? (y/n/all)".
-Then exit — do not start a new debate.
-
-### 4. Create Session Directory
-
-Create the session via the helper (do NOT call `mkdir` directly):
+### 3. Create Session Directory
 
 ```bash
 session_dir=$(bash "$(dirname "$0")/hooks/ultrablitz-utils.sh" create-session)
@@ -87,14 +76,12 @@ runId=$(basename "$session_dir" | sed 's/^ultrablitz-//')
 ```
 
 The helper performs `mkdir -m 700 /tmp/ultrablitz-<runId>/` and prints the
-full path on stdout. `runId` is the canonical identifier used in: every
-artifact filename, the gate lock JSON `runId` field, the gate confirmation
-JSON `runId` field, and every helper subcommand argument that takes a
-session identifier. Do not invent alternate identifiers for the session.
+full path. `runId` is the canonical identifier — every artifact filename,
+every helper subcommand session argument, and the gate lock + confirmation
+JSON `runId` fields all use it. Do not invent alternate identifiers.
 
-Artifacts in this directory follow the canonical naming schema. Content
-artifacts MUST use `.md`. State/control artifacts keep their semantic
-names. Files with any other extension are protocol violations.
+Artifacts follow this naming schema. Content artifacts MUST use `.md`; any
+other extension is a protocol violation.
 
 ```
 /tmp/ultrablitz-<runId>/
@@ -102,52 +89,32 @@ names. Files with any other extension are protocol violations.
   completed                             # extensionless completion marker
   cleanup.error                         # error log (only on cleanup failure)
   plan-full.md                          # full plan when digested (Stage 1 overflow)
-  p1-r<N>-framework-proposal.md         # Phase 1 prompts to Codex
-  p1-r<N>-claude-response.md            # Phase 1 rebuttals to Codex
-  p2-r1-initial-scoring.md              # Phase 2 round 1 prompt to Codex
-  p2-r<N>-rebuttal.md                   # Phase 2 rounds 2+ prompts to Codex (N >= 2)
+  p1-r1-framework.md                    # Phase 1 round 1 prompt
+  p1-r<N>-claude-response.md            # Phase 1 rounds 2+ rebuttals
+  p2-r1-scoring.md                      # Phase 2 round 1 prompt
+  p2-r<N>-rebuttal.md                   # Phase 2 rounds 2+ rebuttals (N >= 2)
 ```
 
 Store in `session.json`: runId (UUID), createdAt (ISO-8601), lastActiveAt
 (updated each round).
 
-### 5. Legacy Scan
-
-Before any other action, run:
+### 4. Session Hygiene Scan
 
 ```bash
 bash "$(dirname "$0")/hooks/ultrablitz-utils.sh" legacy-scan
-```
-
-The helper classifies each pre-existing `/tmp/ultrablitz-*/` as one of
-`conforming`, `completed`, `nonconforming-older-than-4h`, or
-`nonconforming-recent`. Only `completed` sessions are eligible for
-auto-trash via `cleanup-completed`. Non-conforming sessions are surfaced
-to the user; the skill never touches them.
-
-### 6. Clean Completed Sessions
-
-```bash
 bash "$(dirname "$0")/hooks/ultrablitz-utils.sh" cleanup-completed
 ```
 
-This delegates each completed session to `trash-session`, which moves the
-directory to `~/.Trash/ultrablitz-<runId>-<ts>-<pid>/` (with `-2,-3,...`
-suffix retry on collision). Failures are surfaced; the operator is shown
-both successful and failed counts. Incomplete sessions are NEVER
-auto-deleted regardless of age (this guarantee is preserved from the prior
-contract).
+`legacy-scan` classifies each pre-existing `/tmp/ultrablitz-*/` as
+`conforming`, `completed`, `nonconforming-older-than-4h`, or
+`nonconforming-recent` (output is for the operator; the helper never
+auto-acts on non-conforming directories). `cleanup-completed` then trashes
+each session with a `completed` marker via `trash-session`, which moves it
+to `~/.Trash/ultrablitz-<runId>-<ts>-<pid>/`. Failures are surfaced.
+Incomplete sessions are NEVER auto-deleted regardless of age.
 
-### 7. Load Reference Files
-
-Read all before starting:
-- `references/debate-protocol.md`
-- `references/output-contract.md`
-- `references/claude-debate-rules.md`
-- `references/prompts/framework-proposal.md`
-- `references/prompts/framework-rebuttal.md`
-- `references/prompts/initial-scoring.md`
-- `references/prompts/rebuttal-scoring.md`
+Reference files are read on demand when assembling prompts; no separate
+load step.
 
 ---
 
@@ -171,12 +138,18 @@ Present to user, then send to Codex.
 
 ### Step 2: Codex Critiques the Framework
 
-Read `references/prompts/framework-proposal.md`. Assemble with:
+Read `references/prompts/framework-prompt.md`. Assemble with:
+- `{ROUND_CONTEXT}` — R1 framing (see template)
 - `{PLAN_SUMMARY}` — 2-3 sentence plan summary
 - `{FRAMEWORK_PROPOSAL}` — Claude's proposed framework
+- `{INCLUDE_MISSING_DIMENSIONS}` — the R1 MISSING DIMENSIONS block
 - `{DEBATE_PROTOCOL}` — tone blocks
 
 Write to session temp dir. Invoke: `node "$CODEX_COMPANION" task --prompt-file ...`
+
+On rounds 2+, reuse the same template with the R2+ values for
+`{ROUND_CONTEXT}` and `{INCLUDE_MISSING_DIMENSIONS}` (and Claude's rebuttal
+text as `{FRAMEWORK_PROPOSAL}`), and submit via `--resume-last`.
 
 ### Step 3: Framework Debate Loop
 
@@ -237,110 +210,52 @@ Generate dynamic output contract from artifact using the template in
 
 - Phase 2 Round 1 uses `--resume-last` to continue the Phase 1 thread
   (Codex retains framework context). If `--skip-framework`, Round 1 is a fresh task.
-- After Round 1: capture threadId from codex-companion stdout. Store in session state.
-  If Round 1 fails to emit a threadId: retry once (RETRYABLE). If retry also lacks
-  threadId: FATAL — abort. If retry produces a different threadId: use the retry's
-  (latest valid). Store final verified threadId.
-- Before each subsequent round: verify resumed threadId matches stored value.
-  On mismatch: abort with "Another Codex task ran between rounds. Debate context lost."
+- Capture the threadId emitted by codex-companion after Round 1 and persist
+  it in `session.json` for audit. If the thread is lost between rounds,
+  the next `--resume-last` will surface the runtime error from
+  codex-companion itself — no separate per-round verification ritual.
 
-### Output Parsing (Strict)
+### Score Sanity Check
 
-Codex returns `## CATEGORY SCORES` only. No `## SCORE` line.
-Total score is computed deterministically by Claude as the sum of category scores,
-**capped at the theoretical maximum** from the agreed framework.
+After each Codex scoring round, before displaying anything, Claude verifies:
 
-If the raw category sum exceeds the theoretical max, the authoritative score is
-the max. Display as: `Score: {max}/{max} (raw: {sum}, capped at theoretical max)`.
-Category scores are labeled **"diagnostic"** when a cap is active — the authoritative
-total is the capped number, not the raw sum.
+1. **Parse**: the response has `## CATEGORY SCORES`, `## CRITIQUES`,
+   `## STRENGTHS`, `## VERDICT`. Category names match the locked framework
+   exactly (case-insensitive, trimmed, no extras, no duplicates). Each score
+   is in `[0, weight]`. Each critique has Evidence, Impact, Suggestion.
+   Parse failure: retry once with a correction prompt; second failure presents
+   raw output, marks the round non-authoritative, and asks the user.
+2. **Reconcile**: every per-category score *change* must cite a critique
+   whose status moved this round — an *increase* requires a critique in
+   that category newly RESOLVED with a specific plan-diff anchor; a
+   *decrease* requires a new or REGRESSED critique in that category.
+   Unjustified deltas are BLOCKED — the authoritative score for that
+   category retains the prior round's value (the model's number is shown
+   separately as "proposed (unreconciled)").
+3. **Cap**: the authoritative total is `min(sum(category scores),
+   theoretical_max)`. If the raw sum exceeds the cap, display as
+   `Score: {max}/{max} (raw: {sum}, capped)`. On the *first* cap event in
+   a run, ask the user once via AskUserQuestion whether the agreed
+   framework's theoretical max needs recalibration (the only legitimate
+   grounds: a capability or constraint that was excluded from the Phase 1
+   negotiation). User accepts → update the locked max for subsequent
+   rounds; rejects → cap stays. No silent recalibration.
 
-Validation steps:
-1. All required section headers present: `## CATEGORY SCORES`, `## CRITIQUES`,
-   `## STRENGTHS`, `## VERDICT`
-2. Exact category-key matching against locked framework: same count, names match
-   (case-insensitive, trimmed), no extras, no duplicates
-3. Each category score bounded by 0 to that category's weight
-4. Category sum capped at theoretical max (authoritative score = min(sum, max))
-5. Each critique has Evidence, Impact, Suggestion sub-fields
-
-Validation failure: retry ONCE with correction prompt specifying exact expected
-categories and format. Second failure: present raw output, mark non-authoritative,
-ask user to continue or abort.
-
-### Framework Consistency Check
-
-A cap event triggers a **framework consistency check** if ANY of these fire:
-- **Magnitude (rubric)**: overflow exceeds the weight of the smallest category
-- **Magnitude (percentage)**: overflow >= ceil(0.05 * theoretical_max)
-- **Recurrence**: 2+ cap events across rounds
-
-When triggered, display: "Category scores sum to {sum} but theoretical max is {max}.
-Either categories are over-scored or the theoretical max is too low."
-This **blocks consensus** until resolved — via recalibration motion or explicit acceptance.
-
-For small overshoots that don't trigger the check (below all thresholds), the cap
-is applied silently. This represents single-category-scale variance, not a framework defect.
-
-### Theoretical Max Recalibration
-
-The theoretical max is **locked by default** after Phase 1. It can be adjusted during
-Phase 2 ONLY through a formal recalibration motion:
-
-**Valid grounds (exactly two):**
-1. **Ceiling too low** — critique demonstrates a previously excluded capability or
-   plan path consistent with the agreed domain
-2. **Ceiling too high** — critique demonstrates a newly recognized hard constraint
-   that materially reduces achievable performance
-
-**Procedure:**
-1. Either evaluator proposes a recalibration motion with stated ground and evidence
-2. Both evaluators must agree. If they disagree: round marked "framework disputed,"
-   the pre-motion max remains authoritative for this round
-3. The user is the tiebreaker: accept the motion, reject it, or set a custom max
-   (custom max must state one of the two grounds with reasoning — auditable, not ad hoc)
-4. If user doesn't respond (interrupted): pre-motion max holds (conservative default)
-
-**Recording:**
-- Prior max, new max, ground cited, reason, whether prior scores need reinterpretation
-- Limited to 1 recalibration per evaluation unless new objective evidence surfaces
-
-**Auto-trigger:** a framework consistency check (from cap events) can initiate a
-recalibration review even if neither evaluator explicitly proposes one.
-
-### Score Reconciliation (ENFORCED)
-
-After each Codex scoring round, Claude performs reconciliation before displaying:
-
-- **Category increase**: must map to at least one critique in that category marked
-  RESOLVED with a specific plan change cited. If no mapping: the increase is
-  **BLOCKED** — authoritative score retains prior round's value for that category.
-  Model-proposed score shown separately as "proposed (unreconciled)."
-- **Category decrease**: must map to a new or REGRESSED critique in that category.
-  If no mapping: decrease is **BLOCKED**.
-- The authoritative score displayed to the user is always evidence-backed.
-- Reconciliation results shown in the round card for transparency.
+Only fully validated rounds mutate critique ledger / score history /
+consensus state. The reconciliation result is shown in the round card so
+the user can see which deltas were honored and which were blocked.
 
 ### Critique Lifecycle
 
 See `references/claude-debate-rules.md` (Critique Lifecycle Tracking + Re-Raising Rules) for the ledger states and re-raise policy.
 
-### Anti-Gaming Controls
-
-- **Score-change justification**: enforced via reconciliation — increases require
-  resolved critique + plan change citation.
-- **First-principles restatement**: every 3 rounds, Codex must restate its single
-  strongest remaining concern from first principles (not referencing prior critiques).
-- **Verbosity check**: critiques evaluated by specificity, not length. Claude may
-  reject verbose critiques lacking concrete evidence.
-- **Anchoring guard**: if Round 1 score < 30% of max, subsequent rounds cannot
-  jump more than 25% of max per round without proportionate critique resolution.
-
 ### Round 1: Initial Submission
 
-1. Read `references/prompts/initial-scoring.md`.
-2. Assemble prompt: `{PLAN_TEXT}`, `{DEBATE_PROTOCOL}`, `{OUTPUT_CONTRACT}`
-   (dynamic contract from agreed framework).
+1. Read `references/prompts/scoring-prompt.md`.
+2. Assemble prompt with R1 values for `{ROUND_CONTEXT}`,
+   `{INCLUDE_DIG_DEEPER}`, and `{INCLUDE_REBUTTAL_RULES}`, plus
+   `{PLAN_TEXT}`, `{DEBATE_PROTOCOL}`, `{OUTPUT_CONTRACT}` (the dynamic
+   contract from the agreed framework).
 3. Write to session temp dir.
 4. Submit: `node "$CODEX_COMPANION" task --resume-last --prompt-file ...`
    (or fresh task if `--skip-framework`). No `--write`.
@@ -357,73 +272,39 @@ See `references/claude-debate-rules.md` (Critique Lifecycle Tracking + Re-Raisin
    - **REJECTED**: push back with evidence, status stays UNRESOLVED.
    - **PARTIALLY ACCEPTED**: take valid part, propose alternative, status to PARTIALLY_RESOLVED.
 3. MUST push back on at least one point per round if genuinely wrong.
-4. Assemble rebuttal with per-critique responses AND full updated plan.
+4. Assemble rebuttal using `references/prompts/scoring-prompt.md` with
+   R2+ values for `{ROUND_CONTEXT}`, `{INCLUDE_DIG_DEEPER}` (empty), and
+   `{INCLUDE_REBUTTAL_RULES}`; the rebuttal body fills `{PLAN_TEXT}` with
+   per-critique responses plus the full updated plan.
 5. Submit via `--resume-last` (`--prompt-file` for content >= 500 chars).
 6. Parse, validate, reconcile.
 7. Display round results with reconciliation.
 8. Update lastActiveAt and critique ledger. Check termination.
 
-### Termination (Precedence Order)
+### Termination
 
-**Core invariant: no termination path silently drops unresolved findings.**
-Every path either requires all findings RESOLVED, or gets explicit user sign-off.
-PARTIALLY_RESOLVED counts as unresolved for termination purposes (documentary only).
+One rule. No termination path silently drops unresolved findings —
+PARTIALLY_RESOLVED counts as unresolved here.
 
-1. **Consensus** (mechanical): score within 3% of theoretical max AND zero
-   UNRESOLVED or REGRESSED critiques of ANY severity (CRITICAL, MAJOR, and MINOR —
-   all must be fully RESOLVED) AND zero blocked score deltas in current round.
-   All three required. No findings may be skipped.
-2. **User abort**: stop immediately. Final summary MUST include all unresolved
-   findings marked "terminated by user abort." No silent state drop.
-3. **Hard cap** (Phase 1: 5, Phase 2: 10, absolute):
-   - If ALL findings resolved: normal termination.
-   - If unresolved findings remain: ask user via AskUserQuestion:
-     "Hard cap reached with {N} unresolved findings. How to proceed?"
-     - "Accept as-is" — terminate, unresolved listed in summary
-     - "Resolve manually" — user addresses each finding, then terminate
-   - The soft default (`--max-rounds`) does NOT stop the debate if findings remain.
-4. **Stalemate** (score unchanged 2 consecutive rounds):
-   - If ALL findings resolved: true stalemate, terminate normally.
-   - If unresolved findings remain: NOT a stalemate. Escalate to user:
-     "Score is stable but {N} findings remain unresolved."
-     Display each unresolved finding with both positions (Claude vs Codex).
-     User resolves each finding one at a time in severity order (CRITICAL first,
-     then MAJOR, then MINOR, stable within severity by critique ID):
-     - "Accept Claude's position"
-     - "Accept Codex's position"
-     - "Provide your own resolution"
-     If interrupted mid-resolution: on resume, reprompt only unresolved findings.
-     After ALL disposed: terminate with user-mediated resolutions noted.
-5. **Regression** (score decreased 2 consecutive rounds):
-   Display: "Score regressed for 2 rounds. {N} findings remain unresolved."
-   Show all unresolved findings. Ask user:
-   - "Continue debating" — resume, regression counter resets (max 2 continues per session)
-   - "Accept current state" — terminate, unresolved listed
-   - "Resolve manually" — user addresses each finding, then terminate
-   After 2nd "Continue," the Continue option is removed — only Accept or Resolve.
+1. **Consensus**: all critiques RESOLVED AND score within 3% of the
+   theoretical max → terminate normally.
+2. **User abort**: terminate immediately; final summary lists every
+   unresolved finding as "terminated by user abort."
+3. **Round-cap reached OR score unchanged 2 consecutive rounds**: escalate
+   every UNRESOLVED / REGRESSED finding to the user, one at a time, in
+   severity order (CRITICAL → MAJOR → MINOR, then by critique ID). For
+   each, present both positions (Claude vs Codex) and offer "Accept
+   Claude" / "Accept Codex" / "Provide your own." After every finding is
+   disposed, terminate. If interrupted mid-resolution, on resume reprompt
+   only the still-unresolved findings.
 
-### Post-User-Resolution (Universal)
+User resolutions are final — no re-scoring or debate resumption after
+escalation. A user-resolved finding may only be re-raised in a future
+session if Codex cites plan text added or modified after the resolution.
 
-After user resolves all findings (via hard cap, stalemate, or regression paths):
-recompute critique ledger → all findings must be RESOLVED → terminate with final
-summary. No re-scoring, no debate resumption. User resolutions are final.
-
-### Per-Finding Auto-Escalation (Mid-Debate)
-
-Independent of global termination, individual findings auto-escalate to user when:
-- **Oscillation**: finding regressed 2+ times (RESOLVED → REGRESSED twice) →
-  escalate as tie. User picks one position. Decision persisted, debate resumes.
-- **Stuck**: finding unchanged (same positions from both sides) for 3 consecutive
-  rounds → escalate as tie. Same flow.
-
-Per-finding escalation resolves ONE finding and resumes debate. It does NOT trigger
-global termination. The resolved finding is RESOLVED (user-mediated) and won't be
-re-raised absent materially new evidence.
-
-**Re-raise gate (mechanical)**: a user-resolved finding may only be re-raised if
-Codex cites specific plan text added or modified AFTER the user's resolution round.
-Claude checks: does the critique reference a plan diff from a later round? If yes:
-re-raise allowed with fresh linked ID (e.g., UB-7b). If no: rejected automatically.
+Per-finding mid-debate auto-escalation (oscillation, stuck) is subsumed
+by this rule: every escalation path now runs once at the end, in one
+batch, rather than firing repeatedly during the debate.
 
 ### Budget Controls
 
