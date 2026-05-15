@@ -5,13 +5,39 @@
 set -euo pipefail
 
 LOCK_DIR="/tmp"
-REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || pwd -P)
-REPO_HASH=$(echo -n "$REPO_ROOT" | shasum -a 256 | cut -c1-16)
-LOCK_FILE="$LOCK_DIR/ultrablitz-gate-${REPO_HASH}.lock"
-CONF_FILE="$LOCK_DIR/ultrablitz-gate-${REPO_HASH}.confirmed"
+GIT_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || echo "")
+REPO_ROOT="${GIT_ROOT:-$(pwd -P)}"
 
-# No lock → allow
-[ ! -f "$LOCK_FILE" ] && exit 0
+# Resolve the active lock for this CWD.
+# Git context: filename is hash(repoRoot) — single deterministic path.
+# Non-git fallback: lock filenames are hash(pwd|runId), so multiple parallel
+# sessions can share the same parent CWD without colliding. Walk candidates
+# and match by the lock's recorded repoRoot field.
+LOCK_FILE=""
+CONF_FILE=""
+if [ -n "$GIT_ROOT" ]; then
+  REPO_HASH=$(echo -n "$REPO_ROOT" | shasum -a 256 | cut -c1-16)
+  CANDIDATE="$LOCK_DIR/ultrablitz-gate-${REPO_HASH}.lock"
+  if [ -f "$CANDIDATE" ]; then
+    LOCK_FILE="$CANDIDATE"
+    CONF_FILE="$LOCK_DIR/ultrablitz-gate-${REPO_HASH}.confirmed"
+  fi
+else
+  if command -v jq &>/dev/null; then
+    for cand in "$LOCK_DIR"/ultrablitz-gate-*.lock; do
+      [ -f "$cand" ] || continue
+      LR=$(jq -r '.repoRoot // empty' "$cand" 2>/dev/null) || continue
+      if [ "$LR" = "$REPO_ROOT" ]; then
+        LOCK_FILE="$cand"
+        CONF_FILE="${cand%.lock}.confirmed"
+        break
+      fi
+    done
+  fi
+fi
+
+# No lock matches this CWD → allow
+[ -z "$LOCK_FILE" ] && exit 0
 
 # Require jq
 if ! command -v jq &>/dev/null; then

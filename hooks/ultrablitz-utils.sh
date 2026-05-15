@@ -9,9 +9,18 @@ SUBCOMMAND="${1:-}"
 
 case "$SUBCOMMAND" in
   repo-hash)
-    # Output 16-char SHA256 hash of repo root (or canonical CWD if non-git)
-    REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || pwd -P)
-    echo -n "$REPO_ROOT" | shasum -a 256 | cut -c1-16
+    # Output 16-char SHA256 hash for gate-lock filename.
+    # Git context: hash(repoRoot) — singleton per repo (unchanged).
+    # Non-git fallback: hash("pwd -P|$RUN_ID") — singleton per run inside
+    # the same non-git parent CWD, so parallel ultrablitz sessions auditing
+    # sibling repos under a shared dev directory no longer collide.
+    GIT_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || echo "")
+    if [ -n "$GIT_ROOT" ]; then
+      HASH_INPUT="$GIT_ROOT"
+    else
+      HASH_INPUT="$(pwd -P)|${RUN_ID:-}"
+    fi
+    echo -n "$HASH_INPUT" | shasum -a 256 | cut -c1-16
     ;;
 
   cleanup-completed)
@@ -100,13 +109,19 @@ case "$SUBCOMMAND" in
 
   create-gate-lock)
     # Usage: create-gate-lock <runId> <repoRoot> <unlockCode>
-    # Atomic lock create via noclobber.
+    # Atomic lock create via noclobber. Hash is per-repo in a git context,
+    # or per-(cwd,runId) otherwise — see repo-hash for the rationale.
     RUNID="${2:-}" REPO="${3:-}" CODE="${4:-}"
     if [ -z "$RUNID" ] || [ -z "$REPO" ] || [ -z "$CODE" ]; then
       echo "create-gate-lock: runId, repoRoot, unlockCode required" >&2
       exit 1
     fi
-    HASH=$(echo -n "$REPO" | shasum -a 256 | cut -c1-16)
+    if git -C "$REPO" rev-parse --show-toplevel >/dev/null 2>&1; then
+      HASH_INPUT="$REPO"
+    else
+      HASH_INPUT="$REPO|$RUNID"
+    fi
+    HASH=$(echo -n "$HASH_INPUT" | shasum -a 256 | cut -c1-16)
     LOCK="/tmp/ultrablitz-gate-${HASH}.lock"
     CREATED=$(date -u +%FT%TZ)
     PID=$$

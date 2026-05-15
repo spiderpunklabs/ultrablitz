@@ -534,7 +534,7 @@ a mechanical confirmation gate activates to prevent unintended implementation.
    ```bash
    set -C && echo '{"runId":"UUID","repoRoot":"PATH","createdAt":"ISO-8601","unlockCode":"UUID","pid":PID}' > /tmp/ultrablitz-gate-{REPO_HASH}.lock
    ```
-   - `REPO_HASH`: first 16 chars of SHA256 of repo root (or canonical CWD if non-git)
+   - `REPO_HASH`: first 16 chars of SHA256 of repo root in a git context, or of `"$(pwd -P)|$RUN_ID"` otherwise (per-runId scoping for non-git CWDs)
    - `unlockCode`: fresh UUID generated at gate creation time
    - If the file already exists (noclobber fails): an active gate exists for this repo.
      Error: "An active ultrablitz gate exists. Complete or clear it first."
@@ -592,7 +592,13 @@ Options:
 
 ### Singleton Invariant
 
-One active gate per repo. Enforced atomically via `set -C` (noclobber) on lock creation.
+One active gate per repo when ultrablitz runs inside a git checkout (lock keyed by
+repo-root hash). When invoked from a non-git CWD — e.g., a workspace parent that
+contains multiple sibling project repos — the lock is keyed by `(cwd, runId)`,
+which is per-active-run rather than per-CWD. Two parallel ultrablitz sessions
+auditing different siblings under the same non-git parent will no longer collide.
+
+Enforced atomically via `set -C` (noclobber) on lock creation.
 Pre-flight also checks for existing locks as an advisory early warning:
 - Lock exists + <4h old + PID alive → refuse to start new run
 - Lock exists + <4h old + PID dead → warn (likely crashed), offer to clear
