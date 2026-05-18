@@ -9,23 +9,124 @@ on:
 permissions:
   contents: read
 
+# Jobs are inlined (not callouts to spiderpunklabs/workstation/.github/workflows/...)
+# because workstation is private and GitHub blocks PUBLIC repos from calling
+# private repos' reusable workflows (would leak private workflow contents
+# via the public repo's public Actions logs). Canonical implementations
+# live in workstation/ci-templates/ and workstation/.github/workflows/;
+# drift between them and this file is a manual review concern.
+
 jobs:
   gitleaks:
-    uses: spiderpunklabs/workstation/.github/workflows/gitleaks.yml@5cdcf185b262943362bf025e4ff875e13b1d81d9 # ci-templates v1.0.0
+    name: gitleaks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Install gitleaks
+        run: |
+          set -euo pipefail
+          VERSION="8.21.2"
+          curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${VERSION}/gitleaks_${VERSION}_linux_x64.tar.gz" \
+            | sudo tar -xz -C /usr/local/bin gitleaks
+          gitleaks version
+      - name: Scan
+        run: gitleaks detect --no-banner --report-format sarif --report-path gitleaks.sarif --config .gitleaks.toml
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: gitleaks-sarif
+          path: gitleaks.sarif
 
   actionlint:
-    uses: spiderpunklabs/workstation/.github/workflows/actionlint.yml@5cdcf185b262943362bf025e4ff875e13b1d81d9 # ci-templates v1.0.0
+    name: actionlint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: raven-actions/actionlint@v2
+        with:
+          fail-on-error: true
 
   shellcheck:
-    uses: spiderpunklabs/workstation/.github/workflows/shellcheck-reusable.yml@5cdcf185b262943362bf025e4ff875e13b1d81d9 # ci-templates v1.0.0
-    with:
-      severity: error
+    name: shellcheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ludeeus/action-shellcheck@2.0.0
+        with:
+          scandir: '.'
+          severity: error
 
   markdownlint:
-    uses: spiderpunklabs/workstation/.github/workflows/markdownlint-warning.yml@5cdcf185b262943362bf025e4ff875e13b1d81d9 # ci-templates v1.0.0
+    name: markdownlint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: DavidAnson/markdownlint-cli2-action@v18
+        continue-on-error: true
+        with:
+          globs: '**/*.md'
 
   skill-schema:
-    uses: spiderpunklabs/workstation/.github/workflows/skill-schema.yml@5cdcf185b262943362bf025e4ff875e13b1d81d9 # ci-templates v1.0.0
+    name: skill-schema
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Validate SKILL.md
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFile } from 'node:fs/promises';
+          import { exit } from 'node:process';
+
+          const target = 'SKILL.md';
+          const raw = await readFile(target, 'utf8').catch((err) => {
+            console.error(`validate-skill: cannot read ${target}: ${err.message}`);
+            exit(2);
+          });
+
+          const match = raw.match(/^---\n([\s\S]*?)\n---\s*\n/);
+          if (!match) {
+            console.error(`validate-skill: ${target} missing YAML frontmatter`);
+            exit(1);
+          }
+
+          const fm = Object.fromEntries(
+            match[1]
+              .split('\n')
+              .filter((line) => line && !line.startsWith('#'))
+              .map((line) => {
+                const idx = line.indexOf(':');
+                if (idx === -1) return [line.trim(), ''];
+                return [
+                  line.slice(0, idx).trim(),
+                  line.slice(idx + 1).trim().replace(/^["']|["']$/g, ''),
+                ];
+              }),
+          );
+
+          const errors = [];
+          if (!fm.name || typeof fm.name !== 'string') {
+            errors.push('name is required (string)');
+          } else if (!/^[a-z0-9-]+$/.test(fm.name)) {
+            errors.push(`name "${fm.name}" must be lowercase kebab-case`);
+          }
+          if (!fm.description || typeof fm.description !== 'string') {
+            errors.push('description is required (string)');
+          } else if (fm.description.length > 1024) {
+            errors.push(`description is ${fm.description.length} chars; max 1024`);
+          }
+
+          if (errors.length) {
+            console.error(`validate-skill: ${target} failed validation:`);
+            for (const e of errors) console.error(`  - ${e}`);
+            exit(1);
+          }
+          console.log(`validate-skill: ${target} OK (name=${fm.name})`);
+          NODE
 
   hook-parity:
     name: hook-parity
@@ -34,10 +135,10 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Verify hook runner exists
-        run: test -x scripts/check-staged.sh
       - name: Install shellcheck
         run: sudo apt-get update && sudo apt-get install -y shellcheck
+      - name: Verify hook runner exists
+        run: test -x scripts/check-staged.sh
       - name: Run hook script against PR diff
         run: |
           base="${{ github.base_ref }}"
