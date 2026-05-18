@@ -1,0 +1,6 @@
+# gitleaks config — extends default ruleset. Add allowlist entries here
+# if a finding turns out to be benign; each entry MUST include a
+# `description` explaining why.
+
+[extend]
+useDefault = true

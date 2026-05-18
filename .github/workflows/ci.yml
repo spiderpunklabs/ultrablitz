@@ -1,0 +1,49 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  gitleaks:
+    uses: spiderpunklabs/workstation/.github/workflows/gitleaks.yml@36d1f6146c3c82651f6dc2663837aaf75816f902 # ci-templates v1.0.0
+
+  actionlint:
+    uses: spiderpunklabs/workstation/.github/workflows/actionlint.yml@36d1f6146c3c82651f6dc2663837aaf75816f902 # ci-templates v1.0.0
+
+  shellcheck:
+    uses: spiderpunklabs/workstation/.github/workflows/shellcheck-reusable.yml@36d1f6146c3c82651f6dc2663837aaf75816f902 # ci-templates v1.0.0
+    with:
+      severity: error
+
+  markdownlint:
+    uses: spiderpunklabs/workstation/.github/workflows/markdownlint-warning.yml@36d1f6146c3c82651f6dc2663837aaf75816f902 # ci-templates v1.0.0
+
+  skill-schema:
+    uses: spiderpunklabs/workstation/.github/workflows/skill-schema.yml@36d1f6146c3c82651f6dc2663837aaf75816f902 # ci-templates v1.0.0
+
+  hook-parity:
+    name: hook-parity
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Verify hook runner exists
+        run: test -x scripts/check-staged.sh
+      - name: Install shellcheck
+        run: sudo apt-get update && sudo apt-get install -y shellcheck
+      - name: Run hook script against PR diff
+        run: |
+          base="${{ github.base_ref }}"
+          if [ -n "$base" ]; then
+            git fetch origin "$base" --depth=1
+            git diff "origin/$base"...HEAD --name-only -z | xargs -0 -I{} git add --intent-to-add {} 2>/dev/null || true
+            git diff "origin/$base"...HEAD --name-only -z | xargs -0 git update-index --add 2>/dev/null || true
+          fi
+          bash scripts/check-staged.sh
