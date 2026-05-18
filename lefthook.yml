@@ -1,0 +1,6 @@
+pre-commit:
+  parallel: true
+  commands:
+    check-staged:
+      run: bash scripts/check-staged.sh
+      stage_fixed: true
