@@ -11,21 +11,21 @@ permissions:
 
 jobs:
   gitleaks:
-    uses: spiderpunklabs/workstation/.github/workflows/gitleaks.yml@36d1f6146c3c82651f6dc2663837aaf75816f902 # ci-templates v1.0.0
+    uses: spiderpunklabs/workstation/.github/workflows/gitleaks.yml@5cdcf185b262943362bf025e4ff875e13b1d81d9 # ci-templates v1.0.0
 
   actionlint:
-    uses: spiderpunklabs/workstation/.github/workflows/actionlint.yml@36d1f6146c3c82651f6dc2663837aaf75816f902 # ci-templates v1.0.0
+    uses: spiderpunklabs/workstation/.github/workflows/actionlint.yml@5cdcf185b262943362bf025e4ff875e13b1d81d9 # ci-templates v1.0.0
 
   shellcheck:
-    uses: spiderpunklabs/workstation/.github/workflows/shellcheck-reusable.yml@36d1f6146c3c82651f6dc2663837aaf75816f902 # ci-templates v1.0.0
+    uses: spiderpunklabs/workstation/.github/workflows/shellcheck-reusable.yml@5cdcf185b262943362bf025e4ff875e13b1d81d9 # ci-templates v1.0.0
     with:
       severity: error
 
   markdownlint:
-    uses: spiderpunklabs/workstation/.github/workflows/markdownlint-warning.yml@36d1f6146c3c82651f6dc2663837aaf75816f902 # ci-templates v1.0.0
+    uses: spiderpunklabs/workstation/.github/workflows/markdownlint-warning.yml@5cdcf185b262943362bf025e4ff875e13b1d81d9 # ci-templates v1.0.0
 
   skill-schema:
-    uses: spiderpunklabs/workstation/.github/workflows/skill-schema.yml@36d1f6146c3c82651f6dc2663837aaf75816f902 # ci-templates v1.0.0
+    uses: spiderpunklabs/workstation/.github/workflows/skill-schema.yml@5cdcf185b262943362bf025e4ff875e13b1d81d9 # ci-templates v1.0.0
 
   hook-parity:
     name: hook-parity
