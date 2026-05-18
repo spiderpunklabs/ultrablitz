@@ -5,7 +5,13 @@
 
 set -uo pipefail
 
-STAGED=$(git diff --cached --name-only --diff-filter=ACMR -z)
+# bash 3.2 (the default on macOS) strips NUL bytes from $(...) command
+# substitution, so we deliberately use newline-delimited git output here
+# instead of `-z`. Filenames containing literal newlines (extremely rare
+# in practice; not present in any spiderpunklabs repo) would not survive
+# this — accepted trade-off for cross-platform portability.
+# See workstation PR #55 for the upstream fix.
+STAGED=$(git diff --cached --name-only --diff-filter=ACMR)
 if [ -z "$STAGED" ]; then
   exit 0
 fi
@@ -16,7 +22,7 @@ filter_ext() {
   local pattern
   pattern=$(printf '|%s$' "${exts[@]}")
   pattern=${pattern:1}
-  printf '%s' "$list" | tr '\0' '\n' | grep -Ei "$pattern" || true
+  printf '%s\n' "$list" | grep -Ei "$pattern" || true
 }
 
 check_secrets() {
@@ -25,7 +31,8 @@ check_secrets() {
     'id_rsa' 'id_ed25519' 'credentials' 'secrets' '\.tfvars$'
   )
   local fail=0 file
-  while IFS= read -r -d '' file; do
+  while IFS= read -r file; do
+    [ -z "$file" ] && continue
     for pattern in "${FORBIDDEN_PATTERNS[@]}"; do
       if printf '%s' "$file" | grep -qE "$pattern"; then
         printf 'pre-commit: BLOCKED filename matches forbidden pattern %s: %s\n' "$pattern" "$file" >&2
