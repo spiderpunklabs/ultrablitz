@@ -4,3 +4,19 @@ pre-commit:
     check-staged:
       run: bash scripts/check-staged.sh
       stage_fixed: true
+
+# Local pre-push gate: refuse direct pushes to main. Redundant with the
+# GitHub branch protection enabled on this repo (PRs are server-side
+# enforced), but adds local fast-fail with a clearer error message so the
+# developer doesn't waste a network roundtrip discovering the rejection.
+# Bypassable with `git push --no-verify` for emergencies.
+pre-push:
+  commands:
+    no-direct-main:
+      run: |
+        if [ "$(git rev-parse --abbrev-ref HEAD)" = "main" ]; then
+          echo "BLOCKED: direct push to main is not allowed." >&2
+          echo "Open a PR from a feature branch instead." >&2
+          echo "If this is a genuine emergency, bypass with: git push --no-verify" >&2
+          exit 1
+        fi
