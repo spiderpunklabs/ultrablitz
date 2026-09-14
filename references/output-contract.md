@@ -1,11 +1,16 @@
 # Structured Output Contract
 
-This contract is generated dynamically after Phase 1 (Framework Negotiation) completes.
-The categories and weights are populated from the agreed framework.
+This contract is generated dynamically after Phase 1 (Framework Negotiation)
+completes. The categories and weights are populated from the agreed framework.
+It defines the SHAPE of Codex's output only; the scoring semantics live in
+`references/protocol-invariants.md`.
 
-**Important**: Codex does NOT return a `## SCORE` line. The total score is computed
-deterministically by Claude as the sum of category scores. This eliminates dual
-sources of truth.
+**Important**: Codex does NOT return a `## SCORE` line. Per INV-SCORE-1, the
+authoritative total is computed by Claude from the category scores (capped at
+the theoretical max), so the contract deliberately contains no total slot —
+one source of truth. Malformed output is repaired within the bounds of
+INV-FORMAT-1, and validation is performed by the `validate-output` subcommand
+(INV-A9), not by ad-hoc parsing.
 
 ## Template
 
@@ -49,7 +54,10 @@ domain-specific evaluation.
 
 ## `.ultrablitz.json` Config Schema
 
-Users can define a custom default framework in `.ultrablitz.json`:
+Users can define a custom default framework in `.ultrablitz.json`.
+
+**Lookup order**: the repo root first, then the current working directory —
+the first file found wins. These are the only two locations checked.
 
 ```json
 {
@@ -58,13 +66,18 @@ Users can define a custom default framework in `.ultrablitz.json`:
       { "name": "Category Name", "weight": 25, "definition": "What a high score means" }
     ],
     "max": 100
-  },
-  "codex_companion_path": "/path/to/codex-companion.mjs"
+  }
 }
 ```
+
+`default_framework` is the only supported key. In particular, a custom Codex
+companion path is NOT configurable here — the companion is resolved
+exclusively by the `resolve-companion` subcommand (INV-A9), which supports
+only the two standard plugin install locations.
 
 Validation (applied before use):
 - `categories`: array of 3-6 objects, each with `name` (string), `weight` (integer > 0), `definition` (string)
 - Category weights must sum to 100
 - `max`: integer 50-100
 - Invalid config: warn user, fall back to generic 4x25
+- Unknown keys: warn and ignore (the framework itself is still used if valid)
