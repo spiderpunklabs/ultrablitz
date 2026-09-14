@@ -17,10 +17,6 @@ VERBOSE=0
 # Work from any cwd: everything is addressed from the repo root.
 TESTS_DIR="$(cd "$(dirname "$0")" && pwd -P)"
 
-files=""
-for f in "$TESTS_DIR"/test-*.sh; do
-  [ -f "$f" ] && files="$files $f"
-done
 # Named extras, run after the unit/e2e files. Skipped gracefully when absent.
 EXTRAS="prompt-lint.sh contract.bats.sh doc-lint.sh"
 
@@ -54,7 +50,10 @@ run_file() {
   fi
 }
 
-for f in $files; do
+# The glob is safe under `set -u` on bash 3.2: at least one test-*.sh exists,
+# and the [ -f ] guard covers a literal-glob miss anyway.
+for f in "$TESTS_DIR"/test-*.sh; do
+  [ -f "$f" ] || continue
   run_file "$f"
 done
 

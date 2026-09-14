@@ -112,6 +112,9 @@ if (sub === "setup") {
 if (sub === "task") {
   const state = readState();
   state.launches += 1;
+  // Record argv so tests can assert which flags actually reached the companion.
+  state.argv = state.argv || [];
+  state.argv.push(args.join(" "));
   const promptFile = flag("prompt-file");
   if (promptFile) {
     try {

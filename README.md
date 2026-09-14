@@ -161,6 +161,12 @@ wrong architecture. From a shell where `arch` prints your real CPU:
 **Doctor says ready but the first turn fails on a refresh token** — the setup probe
 does not exercise token refresh. Run `codex logout && codex login`.
 
+**`The 'gpt-5.x' model is not supported when using Codex with a ChatGPT account`** —
+the companion's default model is not available on your plan. This is a 400 at turn
+time, so no pre-flight check can see it. Pass a supported model:
+`/ultrablitz --model spark ...`, or `ULTRABLITZ_MODEL=spark` for a whole session,
+or `ULTRABLITZ_SMOKE_MODEL=spark make smoke` for the release smoke test.
+
 **Everything is blocked and the gate will not clear** — `bash hooks/ultrablitz-utils.sh gate-status`
 shows the run; `gate-confirm` clears it properly, `gate-clear` discards it.
 

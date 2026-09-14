@@ -400,6 +400,7 @@ cmd_validate_output() {
 #                          outputFile, attempts, formatRepair, message}
 cmd_codex_turn() {
   local sd="" pf="" resume=0 timeout_ms=300000 contract="" repair_tpl="" label="turn"
+  local model="${ULTRABLITZ_MODEL:-}" effort="${ULTRABLITZ_EFFORT:-}"
   while [ $# -gt 0 ]; do
     case "$1" in
       --session) sd="$2"; shift 2 ;;
@@ -409,6 +410,8 @@ cmd_codex_turn() {
       --contract) contract="$2"; shift 2 ;;
       --repair-template) repair_tpl="$2"; shift 2 ;;
       --label) label="$2"; shift 2 ;;
+      --model) model="$2"; shift 2 ;;
+      --effort) effort="$2"; shift 2 ;;
       *) echo "codex-turn: unknown arg $1" >&2; return 2 ;;
     esac
   done
@@ -429,10 +432,19 @@ cmd_codex_turn() {
     # Launch in background, return jobId on stdout.
     # No empty-array expansion: bash 3.2 (macOS /bin/bash) treats "${a[@]}" on an
     # empty array as an unbound variable under `set -u` and aborts the launch.
+    # --model/--effort are only passed when set, so the companion keeps its own
+    # defaults otherwise. `spark` is the companion's alias for a codex model.
+    local m_flag="" m_val="" e_flag="" e_val=""
+    if [ -n "$model" ]; then m_flag="--model"; m_val="$model"; fi
+    if [ -n "$effort" ]; then e_flag="--effort"; e_val="$effort"; fi
     if [ "$1" = "resume" ]; then
-      node "$comp" task --json --background --cwd "$repo" --resume-last --prompt-file "$2" 2>"$sd/$label.launch.err"
+      node "$comp" task --json --background --cwd "$repo" --resume-last \
+        ${m_flag:+"$m_flag" "$m_val"} ${e_flag:+"$e_flag" "$e_val"} \
+        --prompt-file "$2" 2>"$sd/$label.launch.err"
     else
-      node "$comp" task --json --background --cwd "$repo" --prompt-file "$2" 2>"$sd/$label.launch.err"
+      node "$comp" task --json --background --cwd "$repo" \
+        ${m_flag:+"$m_flag" "$m_val"} ${e_flag:+"$e_flag" "$e_val"} \
+        --prompt-file "$2" 2>"$sd/$label.launch.err"
     fi
   }
 

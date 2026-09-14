@@ -167,6 +167,37 @@ t "interrupt: next turn continues on that thread"
 out="$(run_scenario happy "$SD" --resume --label after-interrupt)"
 assert_json "$out" '.threadId' '01a0-stub-thread-0001'
 
+# --- model / effort passthrough ----------------------------------------------
+# A live account can be refused the companion's default model ("not supported
+# when using Codex with a ChatGPT account"), so these flags must actually reach
+# the companion rather than being silently dropped.
+SD="$(new_session)"
+t "model and effort flags reach the companion"
+out="$(STUB_SCENARIO=happy STUB_STATE="$SD/stub-state.json" bash "$UTILS" codex-turn \
+  --session "$SD" --prompt-file "$SD/prompt.md" --model spark --effort high 2>/dev/null)"
+argv="$(jq -r '.argv[0]' "$SD/stub-state.json")"
+assert_contains "$argv" "--model spark"
+t "effort flag reaches the companion"
+assert_contains "$argv" "--effort high"
+t "the turn still succeeds with both flags"
+assert_json "$out" '.ok' 'true'
+
+SD="$(new_session)"
+t "no model flag is sent when none is requested"
+out="$(STUB_SCENARIO=happy STUB_STATE="$SD/stub-state.json" bash "$UTILS" codex-turn \
+  --session "$SD" --prompt-file "$SD/prompt.md" 2>/dev/null)"
+argv="$(jq -r '.argv[0]' "$SD/stub-state.json")"
+assert_not_contains "$argv" "--model"
+t "no effort flag is sent when none is requested"
+assert_not_contains "$argv" "--effort"
+
+SD="$(new_session)"
+t "ULTRABLITZ_MODEL env var is honoured"
+out="$(ULTRABLITZ_MODEL=spark STUB_SCENARIO=happy STUB_STATE="$SD/stub-state.json" bash "$UTILS" codex-turn \
+  --session "$SD" --prompt-file "$SD/prompt.md" 2>/dev/null)"
+argv="$(jq -r '.argv[0]' "$SD/stub-state.json")"
+assert_contains "$argv" "--model spark"
+
 # --- override safety ---------------------------------------------------------
 t "companion override is ignored without ULTRABLITZ_TEST=1"
 got="$(ULTRABLITZ_TEST=0 bash "$UTILS" resolve-companion 2>/dev/null)"

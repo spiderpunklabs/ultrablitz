@@ -31,12 +31,23 @@ printf 'smoke: companion: %s\n' "$COMPANION"
 printf 'smoke: the turn sends a one-line prompt and expects the reply "OK".\n'
 
 # 1. doctor must pass before we spend a turn.
+#
+# Scope: every RUNTIME check must pass. `registration` is deliberately excluded
+# — it reports whether the gate hook is wired into ~/.claude/settings.json,
+# which matters for an installed skill but not for the thing this test proves
+# (that the companion contract still holds). A maintainer running `make smoke`
+# from a clone has usually not installed the skill, and requiring them to
+# modify their live settings just to validate a contract would be wrong.
 printf 'smoke: [1/4] doctor --json ...\n'
 DOC="$(bash "$UTILS" doctor --json 2>/dev/null)"
-[ "$(printf '%s' "$DOC" | jq -r '.ok' 2>/dev/null)" = "true" ] \
-  || fail "doctor reports not-ok; fix these first:
-$(printf '%s' "$DOC" | jq -r '.checks[] | select(.status=="fail") | "  - \(.name): \(.detail)"' 2>/dev/null)"
-printf 'smoke: doctor ok\n'
+[ -n "$DOC" ] || fail "doctor produced no output"
+RUNTIME_FAILS="$(printf '%s' "$DOC" |
+  jq -r '.checks[] | select(.status=="fail") | select(.name!="registration") | "  - \(.name): \(.detail)"' 2>/dev/null)"
+[ -z "$RUNTIME_FAILS" ] || fail "doctor reports runtime failures; fix these first:
+$RUNTIME_FAILS"
+REG="$(printf '%s' "$DOC" | jq -r '.checks[] | select(.name=="registration") | .status' 2>/dev/null)"
+[ "$REG" = "ok" ] || printf 'smoke: WARNING — gate hook %s (not required for this test; run `bash install.sh --register` for a full install)\n' "$REG"
+printf 'smoke: doctor runtime checks ok\n'
 
 # 2. fresh session + trivial prompt.
 printf 'smoke: [2/4] creating session ...\n'
@@ -46,9 +57,15 @@ printf 'Reply with the single word OK and nothing else.\n' > "$SD/prompt.md"
 
 # 3. one real turn, 5-minute ceiling. No --contract: the reply is a bare OK,
 #    we assert on it directly below.
-printf 'smoke: [3/4] running one Codex turn (timeout 300000ms) ...\n'
+# ULTRABLITZ_SMOKE_MODEL overrides the companion's default model. Needed when
+# the account cannot use that default — e.g. a ChatGPT-plan account is refused
+# the current default with "model is not supported when using Codex with a
+# ChatGPT account", which is a 400 at turn time, not something doctor can see.
+printf 'smoke: [3/4] running one Codex turn (timeout 300000ms%s) ...\n' \
+  "${ULTRABLITZ_SMOKE_MODEL:+, model $ULTRABLITZ_SMOKE_MODEL}"
 OUT="$(bash "$UTILS" codex-turn --session "$SD" --prompt-file "$SD/prompt.md" \
-  --timeout-ms 300000 --label smoke 2>/dev/null)"
+  --timeout-ms 300000 --label smoke \
+  ${ULTRABLITZ_SMOKE_MODEL:+--model "$ULTRABLITZ_SMOKE_MODEL"} 2>/dev/null)"
 [ "$(printf '%s' "$OUT" | jq -r '.ok' 2>/dev/null)" = "true" ] \
   || fail "codex-turn not ok: $(printf '%s' "$OUT" | jq -r '"[\(.failureClass // "?")] \(.message // "no message")"' 2>/dev/null)"
 
