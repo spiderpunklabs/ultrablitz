@@ -47,10 +47,12 @@ gate_log() {
   # wherever the symlink points.
   [ "$STATE_DIR_UNTRUSTED" = 1 ] && return 0
   [ -d "$STATE_DIR" ] || return 0
-  # -c: one JSON object per line (this file is JSON Lines, not a JSON document).
+  # One JSON object per line, SAME five keys as ultrablitz-utils.sh's writer
+  # (defect S4: two writers, one file, one schema). runId is whatever the lock
+  # parse has established by the time of the event; null before that.
   jq -n -c --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg ev "$1" --arg detail "$2" \
-    --arg repo "$REPO_ROOT" --arg tool "${TOOL_NAME:-?}" \
-    '{ts:$ts, event:$ev, repo:$repo, tool:$tool, detail:$detail}' >>"$GATE_LOG" 2>/dev/null || true
+    --arg run "${LOCK_RUN_ID:-}" --arg repo "$REPO_ROOT" --arg tool "${TOOL_NAME:-?}" \
+    '{ts:$ts, event:$ev, runId:(if $run == "" then null else $run end), repo:$repo, tool:$tool, detail:$detail}' >>"$GATE_LOG" 2>/dev/null || true
 }
 
 # Read the tool call from stdin (never blocks: hooks always get input).

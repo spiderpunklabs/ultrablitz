@@ -1,13 +1,7 @@
 # Framework Proposal Prompt — Phase 1, Round 1
 
-Claude proposes a scoring framework to Codex for debate. This is the first step
-before any plan evaluation begins.
-
-Assemble this prompt by interpolating:
-- `{PLAN_SUMMARY}` — a brief summary of the plan/idea to be evaluated (enough context for Codex to understand the domain)
-- `{DEBATE_PROTOCOL}` — tone/stance blocks from `references/debate-protocol.md`
-
-Write the assembled prompt to the session temp directory and invoke Codex with `--prompt-file`.
+Sends Claude's proposed scoring framework to Codex for critique.
+Slots: `{PLAN_SUMMARY}`, `{FRAMEWORK_PROPOSAL}`, `{DEBATE_PROTOCOL}`, and `{FRAMEWORK_CONTRACT}` (the Phase 1 contract in `references/output-contract.md`).
 
 ```xml
 <task>
@@ -37,30 +31,7 @@ PROPOSED FRAMEWORK:
 {DEBATE_PROTOCOL}
 
 <structured_output_contract>
-Return your response in EXACTLY this format:
-
-## FRAMEWORK VERDICT: ACCEPT | REJECT | COUNTER-PROPOSE
-
-## CATEGORY ASSESSMENT:
-For each proposed category:
-- {Category}: ACCEPT | REJECT | MODIFY
-  - If REJECT/MODIFY: why, and what to replace/change it with
-
-## WEIGHT ASSESSMENT:
-- Are the weights appropriate for this domain? If not, propose alternatives with justification.
-
-## THEORETICAL MAXIMUM:
-- What is the realistic maximum score for a plan in this domain, and why?
-- If you disagree with the proposed maximum, state yours with evidence.
-
-## MISSING DIMENSIONS:
-- Are there evaluation dimensions critical to this domain that the framework omits?
-
-## PROPOSED CHANGES:
-{If REJECT or COUNTER-PROPOSE: your complete alternative or modified framework}
-
-## RATIONALE:
-{One paragraph: why this framework is or isn't appropriate for the domain}
+{FRAMEWORK_CONTRACT}
 </structured_output_contract>
 
 <grounding_rules>

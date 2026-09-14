@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- `validate-output` consolidated to one awk scan per file plus one jq filter:
+  70 lines (from 127) and 4–5 processes per call (from ~25), with the response
+  grammar in a single shared scanner so the baseline parse can never drift from
+  the main parse. All 19 existing assertions pass unmodified.
+- The Phase 1 output contract is authored once (`{FRAMEWORK_CONTRACT}` in
+  output-contract.md) and interpolated by both negotiation prompts — round 1
+  and rounds 2+ previously demanded different shapes. Prompt headers lost their
+  stale v5 invocation instructions (`codex-turn` owns invocation); net −1.2 KB
+  across the templates, enforced by four new prompt-lint checks.
+- Four more rules moved into protocol-invariants.md — INV-GAME-1 (anti-gaming),
+  INV-ESC-1 (per-finding escalation), INV-CONFIG-1 (.ultrablitz.json contract),
+  INV-LEDGER-3 (pure recycling) — and SKILL.md's recycling rule now cites the
+  right invariant (it previously pointed at the user-resolution re-raise gate).
+- Both gate.log writers emit the same five keys; doctor derives `.ok` once and
+  its exit code reads it back instead of tracking a parallel flag.
+
+### Removed
+
+- Dead subcommands `version` and `cleanup-interactive` (no callers), the inert
+  constructs in the repair renderer, duplicated resume/fresh selection, and
+  ~35 lines of cite-and-restate and constrains-nothing prose across SKILL.md,
+  claude-debate-rules.md and output-contract.md.
+
 ### Added
 
 - Automatic model selection (INV-MODEL-1): resolved once per run — `--model` →

@@ -1,15 +1,7 @@
 # Rebuttal Scoring Prompt — Phase 2, Rounds 2+
 
-Delta-only prompt. Codex retains context from previous rounds via `--resume-last`.
-
-Assemble the rebuttal text per `claude-debate-rules.md`, then submit via:
-- If rebuttal < 500 chars: pass as positional argument to `task --resume-last "..."`
-- If rebuttal >= 500 chars: write to session temp dir and use `task --resume-last --prompt-file ...`
-
-The rebuttal itself should contain Claude's per-critique responses (with lifecycle
-status updates) and the updated plan.
-
-Wrap the scoring instruction in this XML header before the rebuttal content:
+Delta prompt for re-scoring after a rebuttal; the rebuttal content (per-critique responses plus the full updated plan, per `claude-debate-rules.md`) is APPENDED after the fenced block.
+Slots: `{OUTPUT_CONTRACT}`.
 
 ```xml
 <task>
@@ -50,5 +42,3 @@ Before finalizing, verify that score changes are justified:
 If a check fails, revise the scores instead of shipping the first draft.
 </verification_loop>
 ```
-
-Then append the rebuttal content after the XML blocks.

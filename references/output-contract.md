@@ -1,5 +1,42 @@
 # Structured Output Contract
 
+## Phase 1 contract — interpolated as {FRAMEWORK_CONTRACT}
+
+The single source of truth for the Phase 1 (Framework Negotiation) output shape.
+Both Phase 1 prompt templates (`framework-proposal.md`, `framework-rebuttal.md`)
+interpolate this block verbatim into their `<structured_output_contract>` tags,
+so round 1 and rounds 2+ demand the same shape.
+
+```
+Return your response in EXACTLY this format:
+
+## FRAMEWORK VERDICT: ACCEPT | REJECT | COUNTER-PROPOSE
+
+## CATEGORY ASSESSMENT:
+For each category:
+- {Category}: ACCEPT | REJECT | MODIFY
+  - If REJECT/MODIFY: why, and what to replace/change it with
+
+## WEIGHT ASSESSMENT:
+- Are the weights appropriate for this domain? If not, propose alternatives with justification.
+
+## THEORETICAL MAXIMUM:
+- Your position on the realistic maximum score for a plan in this domain, and why.
+- If you disagree with the proposed maximum, state yours with evidence.
+
+## MISSING DIMENSIONS:
+- Evaluation dimensions critical to this domain that the framework omits.
+- In rounds after the first, "- None." is a complete and legitimate answer.
+
+## PROPOSED CHANGES:
+{Only if REJECT or COUNTER-PROPOSE: your complete alternative or modified framework}
+
+## RATIONALE:
+{One paragraph: why this framework is or isn't appropriate for the domain}
+```
+
+## Phase 2 contract
+
 This contract is generated dynamically after Phase 1 (Framework Negotiation)
 completes. The categories and weights are populated from the agreed framework.
 It defines the SHAPE of Codex's output only; the scoring semantics live in
@@ -49,8 +86,7 @@ Do NOT include a total score line — it will be computed from your category sco
 Theoretical Maximum: 100
 ```
 
-This is labeled "GENERIC" when used. Framework negotiation is recommended for
-domain-specific evaluation.
+This is labeled "GENERIC" when used.
 
 ## `.ultrablitz.json` Config Schema
 
@@ -70,10 +106,7 @@ the first file found wins. These are the only two locations checked.
 }
 ```
 
-`default_framework` is the only supported key. In particular, a custom Codex
-companion path is NOT configurable here — the companion is resolved
-exclusively by the `resolve-companion` subcommand (INV-A9), which supports
-only the two standard plugin install locations.
+`default_framework` is the only supported key.
 
 Validation (applied before use):
 - `categories`: array of 3-6 objects, each with `name` (string), `weight` (integer > 0), `definition` (string)

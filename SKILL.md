@@ -15,7 +15,7 @@ description: >-
 # Ultrablitz — Adversarial Debate Loop
 
 > **Requires** the [openai-codex plugin](https://github.com/openai/codex-plugin-cc)
-> and a one-time `bash install.sh --register`. See `README.md`.
+> and a one-time `bash install.sh --register`.
 
 Two phases. **Phase 1** negotiates the evaluation framework (categories, weights,
 theoretical maximum) until both sides agree. **Phase 2** evaluates the plan against
@@ -26,8 +26,7 @@ that locked framework until mechanical consensus or a hard cap.
 Every mechanical rule has exactly one normative home in
 `references/protocol-invariants.md`, cited here as `INV-*`. Where this file cites
 an invariant, the invariant text wins. Every mechanical *step* is a subcommand of
-`hooks/ultrablitz-utils.sh` — never re-derive its internals here or reimplement it
-inline (**INV-A9**). Your job is the judgement: framework design, rebuttals,
+`hooks/ultrablitz-utils.sh` (**INV-A9**). Your job is the judgement: framework design, rebuttals,
 ledger decisions, reconciliation reasoning, and what to show the user.
 
 ```bash
@@ -56,8 +55,8 @@ the ledger, scores, or the round counter.
 - `--max-rounds N` — Phase 2 soft target (default 5). Soft: the debate continues
   past it while findings remain, to the hard cap of 20.
 - `--framework-rounds N` — Phase 1 soft target (default 3), hard cap 10.
-- `--skip-framework` — use `.ultrablitz.json`'s `default_framework`, else the
-  generic 4×25 rubric, labelled GENERIC.
+- `--skip-framework` — use `.ultrablitz.json`'s `default_framework`
+  (**INV-CONFIG-1**), else the generic 4×25 rubric, labelled GENERIC.
 - `--reviewer codex|claude` — default `codex`. `claude` is ADVISORY (**INV-TERM-3**).
 - `--out <dir>` — where to persist artifacts.
 - `--model M`, `--effort E` — passed through to Codex on every turn. `--model` is
@@ -104,12 +103,14 @@ If no plan text is given, ask what to debate. Flags override implied intent.
    summing to 100, a one-sentence definition each, a theoretical maximum with a
    reason, and the domain's attack surface. Show it to the user.
 2. **Critique.** Assemble `references/prompts/framework-proposal.md`
-   (`{PLAN_SUMMARY}`, `{FRAMEWORK_PROPOSAL}`, `{DEBATE_PROTOCOL}`) and send it with
+   (`{PLAN_SUMMARY}`, `{FRAMEWORK_PROPOSAL}`, `{DEBATE_PROTOCOL}`,
+   `{FRAMEWORK_CONTRACT}` from `references/output-contract.md`) and send it with
    `codex-turn` (no `--resume`; this is the first debate turn).
 3. **Debate.** On ACCEPT, lock the framework. On REJECT or COUNTER-PROPOSE,
    answer every objection with CONCEDE, HOLD (with evidence), or COMPROMISE, then
-   send `references/prompts/framework-rebuttal.md` with `--resume`. Concede where
-   Codex is right; hold where the original is genuinely better. Repeat to the cap.
+   send `references/prompts/framework-rebuttal.md` (same `{FRAMEWORK_CONTRACT}`
+   slot) with `--resume`. Concede where Codex is right; hold where the original
+   is genuinely better. Repeat to the cap.
 4. **Cap without ACCEPT.** Per field: the side that held keeps its position; the
    theoretical max takes the LOWER of the two. Unresolved fields go to the user,
    who must resolve them before Phase 2 starts.
@@ -177,16 +178,11 @@ Refined Plan: {if changed}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ```
 
-**Anti-gaming.** Every third round, require Codex to restate its single strongest
-remaining concern from first principles. Judge critiques by specificity, not
-length. If Round 1 scored under 30% of max, later rounds cannot jump more than 25%
-of max in one round without proportionate resolutions. Pure recycling of an
-addressed critique with no new evidence is refused and stays RESOLVED
-(**INV-LEDGER-2**).
+**Anti-gaming.** Enforce the anti-gaming controls on every round (**INV-GAME-1**);
+a recycled critique with no new evidence stays RESOLVED (**INV-LEDGER-3**).
 
-**Per-finding escalation.** A finding that oscillates (RESOLVED → REGRESSED twice)
-or is unchanged for three rounds goes to the user as a tie. That resolves one
-finding and the debate continues; it is not a termination.
+**Per-finding escalation.** A stuck finding escalates to the user as a tie and the
+debate resumes after their ruling (**INV-ESC-1**).
 
 ## Termination and the gate
 
@@ -239,15 +235,13 @@ Artifacts: {paths}
 `--reviewer claude` runs the same prompts against an independent Claude subagent.
 It is never selected automatically: if Codex pre-flight fails, print the diagnosis
 and stop, and let the user re-invoke. ADVISORY runs are labelled in every round
-card and the summary, are `authoritative: false`, and cannot reach Consensus
-(**INV-TERM-3**).
+card and the summary (**INV-TERM-3**).
 
 ## Prompt hygiene
 
 Plan text goes between explicit delimiters (`THE PLAN:` … `---`), never inside XML
 control tags. Quote prior Codex output as `Codex said:` prose. Claude's rebuttals
-are markdown only. Keep every assembled prompt within **INV-BUDGET-1**; overflow
-becomes a Plan Digest with the full text on disk and findings referenced by ID.
+are markdown only. Keep every assembled prompt within **INV-BUDGET-1**.
 
 ## Critical rules
 

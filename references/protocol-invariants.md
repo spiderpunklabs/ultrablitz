@@ -6,10 +6,6 @@ paragraph. Every other document — SKILL.md, the other references, the prompt
 templates — cites these IDs and never restates the rule; where a paraphrase
 elsewhere disagrees with this file, this file wins.
 
-Definition convention: each invariant is a `### INV-…` heading. The doc-lint
-suite (`tests/doc-lint.sh`) enforces that every cited ID is defined here and
-warns on defined-but-never-cited IDs.
-
 ## Scoring
 
 ### INV-SCORE-1 — Total is the capped category sum
@@ -87,6 +83,36 @@ resolved it. Claude checks mechanically: does the critique reference a plan
 diff from a later round? If yes, the re-raise is allowed under a fresh linked
 ID (e.g. UB-7b). If no, the re-raise is rejected automatically — no debate, no
 ledger change.
+
+### INV-LEDGER-3 — Pure recycling is refused
+
+A previously RESOLVED critique that is re-raised with no new evidence and no
+relevant plan change since its resolution is refused, and the critique keeps
+its RESOLVED status — no debate, no ledger change. A re-raise that does carry
+new evidence, or an argument that the fix was inadequate, moves the critique
+to REGRESSED per INV-LEDGER-1.
+
+## Anti-Gaming
+
+### INV-GAME-1 — Anti-gaming controls
+
+Three controls apply throughout Phase 2. (1) Every third round, Codex must
+restate its single strongest remaining concern from first principles.
+(2) Critiques are judged by specificity, not length. (3) Anchoring guard: if
+Round 1's authoritative score was under 30% of the theoretical maximum, no
+later round may increase the authoritative score by more than 25% of the
+theoretical maximum in a single round unless the jump is backed by
+proportionate critique resolutions.
+
+## Escalation
+
+### INV-ESC-1 — Per-finding escalation
+
+A finding that oscillates (RESOLVED → REGRESSED twice) or whose status is
+unchanged for three consecutive rounds escalates to the user as a tie. The
+user's resolution settles that one finding and the debate resumes —
+escalation is not a termination path. A finding the user resolves this way is
+thereafter protected by the re-raise gate of INV-LEDGER-2.
 
 ## Termination
 
@@ -184,6 +210,17 @@ restate their internals — no inline reimplementation of validation, locking,
 session I/O, or gate logic in prose or ad-hoc Bash. The subcommands are the
 normative implementation; if SKILL.md's description and a subcommand's
 behavior diverge, the subcommand wins and SKILL.md is the bug.
+
+## Configuration
+
+### INV-CONFIG-1 — .ultrablitz.json contract
+
+`.ultrablitz.json` is looked up in the repo root first, then the current
+working directory; the first file found wins. A valid `default_framework`
+defines 3–6 categories with integer weights summing to 100 and a theoretical
+maximum between 50 and 100. The optional `model` key names the model for the
+run (resolved per INV-MODEL-1). An invalid config produces a warning and a
+fallback to the generic 4×25 rubric — it never aborts the run.
 
 ## Model selection
 

@@ -218,11 +218,11 @@ ub_companion_version() {
 # --- doctor ------------------------------------------------------------------
 
 cmd_doctor() {
-  local json=0 fail=0
+  local json=0
   [ "${1:-}" = "--json" ] && json=1
   local -a checks=()
 
-  add() { checks+=("$(jq -n --arg n "$1" --arg s "$2" --arg d "$3" '{name:$n,status:$s,detail:$d}')"); [ "$2" = "fail" ] && fail=1; return 0; }
+  add() { checks+=("$(jq -n --arg n "$1" --arg s "$2" --arg d "$3" '{name:$n,status:$s,detail:$d}')"); return 0; }
 
   if ! ub_have jq; then
     echo "FAIL jq: not installed. Install with: brew install jq (macOS) or apt-get install jq" >&2
@@ -288,16 +288,22 @@ cmd_doctor() {
     add companion-override warn "TEST OVERRIDE ACTIVE: $ULTRABLITZ_COMPANION_OVERRIDE (ULTRABLITZ_TEST=${ULTRABLITZ_TEST:-0})"
   fi
 
+  # .ok is derived once, in the jq below, and the exit code reads it back —
+  # one source of truth instead of a parallel shell flag (defect S12). The
+  # array guard covers bash 3.2's empty-"${a[@]}" abort; checks is never empty
+  # in practice (jq's presence alone adds an entry), but the guard is free.
   local out
-  out="$(printf '%s\n' "${checks[@]}" | jq -s --arg v "$UB_VERSION" '{version:$v, ok: (map(select(.status=="fail")) | length == 0), checks: .}')"
+  if [ ${#checks[@]} -eq 0 ]; then
+    out="$(jq -n --arg v "$UB_VERSION" '{version:$v, ok:false, checks:[]}')"
+  else
+    out="$(printf '%s\n' "${checks[@]}" | jq -s --arg v "$UB_VERSION" '{version:$v, ok: (map(select(.status=="fail")) | length == 0), checks: .}')"
+  fi
   if [ "$json" = "1" ]; then
     printf '%s\n' "$out"
   else
-    printf '%s\n' "$out" | jq -r '.checks[] | "\(.status | ascii_upcase | .[0:4]) \(.name): \(.detail)"'
-    printf '%s\n' "$out" | jq -r 'if .ok then "doctor: PASS" else "doctor: FAIL" end'
+    printf '%s\n' "$out" | jq -r '(.checks[] | "\(.status | ascii_upcase | .[0:4]) \(.name): \(.detail)"), (if .ok then "doctor: PASS" else "doctor: FAIL" end)'
   fi
-  [ "$fail" = "1" ] && return 1
-  return 0
+  printf '%s' "$out" | jq -e '.ok' >/dev/null
 }
 
 # --- sessions ----------------------------------------------------------------
@@ -424,120 +430,101 @@ cmd_validate_output() {
   done
   [ -r "$contract" ] || { echo "validate-output: contract unreadable" >&2; return 2; }
   [ -r "$input" ] || { echo "validate-output: input unreadable" >&2; return 2; }
-  # A broken contract must fail loudly, not validate vacuously: without this, a
-  # non-JSON contract made every downstream jq comparison empty and the output
-  # scored as ok:true with zero checks performed.
+  # A broken contract fails loudly instead of validating vacuously (ok:true
+  # with zero checks performed).
   jq -e '(.categories | type == "array") and (.categories | length > 0) and (.max | type == "number")' \
     "$contract" >/dev/null 2>&1 || {
     echo "validate-output: contract is not valid framework JSON ({categories:[{name,weight}...], max:N}): $contract" >&2
     return 2
   }
 
-  local errors=() body
-  body="$(cat "$input")"
+  # One awk pass per file (ub_scan_output), one jq filter for every check and
+  # the final object: no shell arrays (bash-3.2 empty-"${a[@]}" trap), no
+  # string-pasted JSON (S2), no duplicated baseline parser (S5).
+  local out stream bstream=""
+  stream="$(ub_scan_output "$input")"
+  [ -n "$baseline" ] && [ -r "$baseline" ] && bstream="$(ub_scan_output "$baseline")"
+  out="$(printf '%s\n' "$stream" | jq -Rs --arg b "$bstream" --slurpfile c "$contract" '
+    def rows: split("\n") | map(select(length > 0) | split("\t"));
+    def norm: ascii_downcase | gsub("^\\s+|\\s+$"; "");
+    def cats($r): [$r[] | select(.[0] == "S") | {name: .[1], score: (.[2] | tonumber)}];
+    def crit($r): ([$r[] | select(.[0] == "C")][0]);
+    rows as $r | ($b | rows) as $br
+    | cats($r) as $cats | crit($r) as $cc | ($cc[1] | tonumber) as $ncrit
+    | ([$r[] | select(.[0] == "H")][0]) as $hh
+    | ($c[0].categories | map(.name)) as $want | ($cats | map(.name)) as $got
+    | ($c[0].categories | map({key: (.name|norm), value: .weight}) | from_entries) as $w
+    | (if $b == "" then null
+       else {scores: (cats($br) | map(.score)), ncrit: (crit($br)[1] | tonumber)} end) as $base
+    | ( (if ([$r[] | select(.[0] == "M")][0][1]) == "1" then [] else ["output is empty"] end)
+      + ([["## CATEGORY SCORES", $hh[1]], ["## CRITIQUES", $hh[2]],
+          ["## STRENGTHS", $hh[3]], ["## VERDICT", $hh[4]]]
+         | map(select(.[1] != "1") | "missing section header: " + .[0]))
+      + (($want | map(select(. as $x | ($got | map(norm) | index($x|norm)) == null)))
+         | if length > 0 then ["missing categories: " + join(", ")] else [] end)
+      + (($got | map(select(. as $g | ($want | map(norm) | index($g|norm)) == null)))
+         | if length > 0 then ["unexpected categories: " + join(", ")] else [] end)
+      + (($got | map(norm) | group_by(.) | map(select(length > 1) | .[0]))
+         | if length > 0 then ["duplicate categories: " + join(", ")] else [] end)
+      + (($cats | map(select((.score < 0) or ($w[(.name|norm)] != null and .score > $w[(.name|norm)])))
+               | map("\(.name)=\(.score)"))
+         | if length > 0 then ["category score out of bounds: " + join(", ")] else [] end)
+      + (if $ncrit > 0 then
+           ([["Evidence", ($cc[2] | tonumber)], ["Impact", ($cc[3] | tonumber)],
+             ["Suggestion", ($cc[4] | tonumber)]]
+            | map(select(.[1] < $ncrit) | "\($ncrit) critiques but \(.[1]) \(.[0]) fields"))
+         else [] end)
+      + (if $base != null and ($base.scores | length > 0) and $base.scores != ($cats | map(.score))
+         then ["repair changed scores: was [" + ($base.scores | join(",")) + "] now ["
+               + ($cats | map(.score) | join(",")) + "]"] else [] end)
+      + (if $base != null and $base.ncrit > 0 and $base.ncrit != $ncrit
+         then ["repair changed critique count: was \($base.ncrit) now \($ncrit)"] else [] end)
+      ) as $errs
+    | {ok: (($errs | length) == 0), errors: $errs, categories: $cats,
+       critiqueCount: $ncrit, total: ($cats | map(.score) | add // 0)}')" || {
+    echo "validate-output: internal jq failure" >&2
+    return 2
+  }
+  printf '%s\n' "$out"
+  printf '%s' "$out" | jq -e '.ok' >/dev/null
+}
 
-  [ -n "$(printf '%s' "$body" | tr -d '[:space:]')" ] || errors+=("output is empty")
-
-  local h
-  for h in "## CATEGORY SCORES" "## CRITIQUES" "## STRENGTHS" "## VERDICT"; do
-    printf '%s' "$body" | grep -qF "$h" || errors+=("missing section header: $h")
-  done
-
-  # Parse "- Name: 12" lines from the CATEGORY SCORES block.
-  local parsed
-  parsed="$(printf '%s\n' "$body" | awk '
-    /^## CATEGORY SCORES/ {inblk=1; next}
-    /^## / {inblk=0}
+# One pass over a response file, emitting a tagged TSV stream for jq:
+#   S <name> <score>   per parsed category-score line
+#   M <0|1>            file has any non-whitespace content
+#   H <h1> <h2> <h3> <h4>  presence of the four required section headers
+#   C <n> <ev> <im> <su>   critique count and Evidence/Impact/Suggestion counts
+# The single home of the response grammar — the baseline (pre-repair) file is
+# scanned by this same function, so the two parses can never drift apart.
+ub_scan_output() {
+  awk '
+    /[^[:space:]]/ { ne = 1 }
+    index($0, "## CATEGORY SCORES") { h1 = 1 }
+    index($0, "## CRITIQUES") { h2 = 1 }
+    index($0, "## STRENGTHS") { h3 = 1 }
+    index($0, "## VERDICT") { h4 = 1 }
+    /^## CATEGORY SCORES/ { inblk = 1; next }
+    /^## CRITIQUES/ { inc = 1 }
+    /^## / { inblk = 0; if (!/^## CRITIQUES/) inc = 0 }
     inblk && /^[[:space:]]*-[[:space:]]*.+:[[:space:]]*-?[0-9]+[[:space:]]*$/ {
-      line=$0
+      line = $0
       sub(/^[[:space:]]*-[[:space:]]*/, "", line)
-      idx=match(line, /:[[:space:]]*-?[0-9]+[[:space:]]*$/)
-      name=substr(line, 1, idx-1)
-      score=substr(line, idx+1)
+      idx = match(line, /:[[:space:]]*-?[0-9]+[[:space:]]*$/)
+      name = substr(line, 1, idx - 1)
+      score = substr(line, idx + 1)
       gsub(/[^0-9-]/, "", score)
       gsub(/^[[:space:]]+|[[:space:]]+$/, "", name)
-      printf "%s\t%s\n", name, score
-    }')"
-
-  # jq does ALL of the JSON construction (defect S2): the previous awk printf
-  # string-pasting produced invalid JSON the moment a category name contained a
-  # quote or backslash, which then voided the whole validation silently.
-  local names_json scores_json
-  scores_json="$(printf '%s\n' "$parsed" | jq -Rs '
-    [split("\n")[] | select(length > 0) | split("\t") | select(length == 2)
-     | {name: .[0], score: (.[1] | tonumber)}]')"
-  names_json="$(printf '%s' "$scores_json" | jq '[.[].name]')"
-  [ -z "$parsed" ] && { names_json='[]'; scores_json='[]'; }
-
-  # Exact category-key match against the locked framework (case-insensitive).
-  local want_json
-  want_json="$(jq -c '[.categories[].name]' "$contract")"
-  local cmp
-  cmp="$(jq -n --argjson got "$names_json" --argjson want "$want_json" '
-    def norm: ascii_downcase | gsub("^\\s+|\\s+$";"");
-    {missing: ($want | map(select(. as $w | ($got | map(norm) | index($w|norm)) == null))),
-     extra:   ($got  | map(select(. as $g | ($want | map(norm) | index($g|norm)) == null))),
-     dupes:   ($got  | map(norm) | group_by(.) | map(select(length>1) | .[0]))}')"
-  local missing extra dupes
-  missing="$(printf '%s' "$cmp" | jq -r '.missing | join(", ")')"
-  extra="$(printf '%s' "$cmp" | jq -r '.extra | join(", ")')"
-  dupes="$(printf '%s' "$cmp" | jq -r '.dupes | join(", ")')"
-  [ -n "$missing" ] && errors+=("missing categories: $missing")
-  [ -n "$extra" ] && errors+=("unexpected categories: $extra")
-  [ -n "$dupes" ] && errors+=("duplicate categories: $dupes")
-
-  # Bounds: 0 <= score <= that category's weight.
-  local oob
-  oob="$(jq -rn --argjson got "$scores_json" --slurpfile c "$contract" '
-    def norm: ascii_downcase | gsub("^\\s+|\\s+$";"");
-    ($c[0].categories | map({key:(.name|norm), value:.weight}) | from_entries) as $w
-    | $got | map(select((.score < 0) or ($w[(.name|norm)] != null and .score > $w[(.name|norm)])))
-    | map("\(.name)=\(.score)") | join(", ")')"
-  [ -n "$oob" ] && errors+=("category score out of bounds: $oob")
-
-  # Each critique needs Evidence / Impact / Suggestion.
-  local ncrit nev nim nsug
-  ncrit="$(printf '%s\n' "$body" | awk '/^## CRITIQUES/{i=1;next} /^## /{i=0} i && /^[[:space:]]*[0-9]+\./{n++} END{print n+0}')"
-  nev="$(printf '%s\n' "$body" | grep -c '^[[:space:]]*-[[:space:]]*Evidence:' || true)"
-  nim="$(printf '%s\n' "$body" | grep -c '^[[:space:]]*-[[:space:]]*Impact:' || true)"
-  nsug="$(printf '%s\n' "$body" | grep -c '^[[:space:]]*-[[:space:]]*Suggestion:' || true)"
-  if [ "$ncrit" -gt 0 ]; then
-    [ "$nev" -ge "$ncrit" ] || errors+=("$ncrit critiques but $nev Evidence fields")
-    [ "$nim" -ge "$ncrit" ] || errors+=("$ncrit critiques but $nim Impact fields")
-    [ "$nsug" -ge "$ncrit" ] || errors+=("$ncrit critiques but $nsug Suggestion fields")
-  fi
-
-  # Repair substance check (INV-FORMAT-1): scores and critique count must match
-  # whatever was parseable pre-repair.
-  if [ -n "$baseline" ] && [ -r "$baseline" ]; then
-    local b_scores b_ncrit
-    b_scores="$(printf '%s\n' "$(cat "$baseline")" | awk '
-      /^## CATEGORY SCORES/ {inblk=1; next} /^## / {inblk=0}
-      inblk && /^[[:space:]]*-[[:space:]]*.+:[[:space:]]*-?[0-9]+[[:space:]]*$/ {
-        line=$0; sub(/^[[:space:]]*-[[:space:]]*/, "", line)
-        idx=match(line, /:[[:space:]]*-?[0-9]+[[:space:]]*$/)
-        score=substr(line, idx+1); gsub(/[^0-9-]/, "", score); printf "%s\n", score
-      }' | tr '\n' ',')"
-    local n_scores
-    n_scores="$(printf '%s' "$scores_json" | jq -r '[.[].score] | join(",")'),"
-    if [ -n "$(printf '%s' "$b_scores" | tr -d ,)" ] && [ "$b_scores" != "$n_scores" ]; then
-      errors+=("repair changed scores: was [${b_scores%,}] now [${n_scores%,}]")
-    fi
-    b_ncrit="$(printf '%s\n' "$(cat "$baseline")" | awk '/^## CRITIQUES/{i=1;next} /^## /{i=0} i && /^[[:space:]]*[0-9]+\./{n++} END{print n+0}')"
-    if [ "$b_ncrit" -gt 0 ] && [ "$b_ncrit" != "$ncrit" ]; then
-      errors+=("repair changed critique count: was $b_ncrit now $ncrit")
-    fi
-  fi
-
-  local errs_json
-  if [ ${#errors[@]} -eq 0 ]; then errs_json='[]'; else
-    errs_json="$(printf '%s\n' "${errors[@]}" | jq -R . | jq -s .)"
-  fi
-  jq -n --argjson errs "$errs_json" --argjson cats "$scores_json" --argjson n "$ncrit" \
-    '{ok: (($errs | length) == 0), errors:$errs, categories:$cats, critiqueCount:$n,
-      total: ($cats | map(.score) | add // 0)}'
-  [ ${#errors[@]} -eq 0 ] || return 1
-  return 0
+      printf "S\t%s\t%s\n", name, score
+    }
+    inc && /^[[:space:]]*[0-9]+\./ && !/^## / { n++ }
+    /^[[:space:]]*-[[:space:]]*Evidence:/ { ev++ }
+    /^[[:space:]]*-[[:space:]]*Impact:/ { im++ }
+    /^[[:space:]]*-[[:space:]]*Suggestion:/ { su++ }
+    END {
+      printf "M\t%d\n", ne + 0
+      printf "H\t%d\t%d\t%d\t%d\n", h1 + 0, h2 + 0, h3 + 0, h4 + 0
+      printf "C\t%d\t%d\t%d\t%d\n", n + 0, ev + 0, im + 0, su + 0
+    }' "$1"
 }
 
 # --- codex turn --------------------------------------------------------------
@@ -642,9 +629,12 @@ cmd_codex_turn() {
   # asked for. Every switch is recorded in session.json in the same step, and a
   # failed record aborts the turn — session.json never names a model other than
   # the one in use.
+  local launch_mode=fresh
+  [ "$resume" = 1 ] && launch_mode=resume
+
   local launch_json jobid res_json status raw thread csid
   while :; do
-    launch_json="$(ub_launch "$([ $resume = 1 ] && echo resume || echo fresh)" "$pf")"
+    launch_json="$(ub_launch "$launch_mode" "$pf")"
     if ! printf '%s' "$launch_json" | jq -e .jobId >/dev/null 2>&1; then
       local err; err="$(cat "$sd/$label.launch.err" 2>/dev/null)"
       # "task still running" — this session's own job (E13: foreign jobs are
@@ -654,7 +644,7 @@ cmd_codex_turn() {
         running="$(node "$comp" status --json --cwd "$repo" 2>/dev/null | jq -r '.running[0].id // empty')"
         if [ -n "$running" ]; then
           node "$comp" status "$running" --wait --timeout-ms "$timeout_ms" --json --cwd "$repo" >/dev/null 2>&1
-          launch_json="$(ub_launch "$([ $resume = 1 ] && echo resume || echo fresh)" "$pf")"
+          launch_json="$(ub_launch "$launch_mode" "$pf")"
         fi
         if ! printf '%s' "$launch_json" | jq -e .jobId >/dev/null 2>&1; then
           ub_turn_fail RETRYABLE "a Codex task is still running${running:+ (job $running)}; no state was changed"
@@ -872,8 +862,10 @@ ub_render_repair() {
   #     and both CATEGORY_LIST and OFFENDING_OUTPUT are multi-line;
   #   - sed/awk replacement text treats & and \1 specially, and category names
   #     contain & ("Gate & safety integrity").
+  # The heredoc always ends with a newline, so plain `read` sees every line;
+  # multi-line slot values get the same [ -n ] guards in every branch.
   local line pre post
-  while IFS= read -r line || [ -n "$line" ]; do
+  while IFS= read -r line; do
     case "$line" in
       *'{EXPECTED_HEADERS}'*)
         pre="${line%%\{EXPECTED_HEADERS\}*}"
@@ -883,7 +875,9 @@ ub_render_repair() {
       *'{CATEGORY_LIST}'*)
         pre="${line%%\{CATEGORY_LIST\}*}"
         post="${line#*\{CATEGORY_LIST\}}"
-        printf '%s\n%s\n%s\n' "${pre%$'\n'}" "$cats" "$post" | sed '/^$/d'
+        [ -n "$pre" ] && printf '%s\n' "$pre"
+        printf '%s\n' "$cats"
+        [ -n "$post" ] && printf '%s\n' "$post"
         ;;
       *'{OFFENDING_OUTPUT}'*)
         pre="${line%%\{OFFENDING_OUTPUT\}*}"
@@ -997,9 +991,11 @@ cmd_gate_clear() {
 
 ub_gate_log() {
   local d; d="$(ub_state_dir 2>/dev/null)" || return 0
-  # -c: one JSON object per line (JSON Lines, matching the gate hook's writer).
+  # One JSON object per line, SAME five keys as the gate hook's writer (defect
+  # S4: two writers, one file, one schema). `tool` is null here — utils calls
+  # are not tool interceptions.
   jq -n -c --arg ts "$(ub_now)" --arg ev "$1" --arg run "$2" --arg detail "$3" --arg repo "$(ub_repo_root)" \
-    '{ts:$ts, event:$ev, runId:$run, repo:$repo, detail:$detail}' >> "$d/gate.log" 2>/dev/null || true
+    '{ts:$ts, event:$ev, runId:(if $run == "" or $run == "-" then null else $run end), repo:$repo, tool:null, detail:$detail}' >> "$d/gate.log" 2>/dev/null || true
 }
 
 # --- cleanup -----------------------------------------------------------------
@@ -1090,7 +1086,6 @@ cmd_run_unlock() {
 SUB="${1:-}"
 [ $# -gt 0 ] && shift
 case "$SUB" in
-  version) printf '%s\n' "$UB_VERSION" ;;
   doctor) cmd_doctor "$@" ;;
   resolve-companion) ub_resolve_companion ;;
   resolve-model) cmd_resolve_model "$@" ;;
@@ -1109,12 +1104,12 @@ case "$SUB" in
   run-lock) cmd_run_lock "$@" ;;
   run-unlock) cmd_run_unlock "$@" ;;
   cleanup-completed) cmd_cleanup_completed "$@" ;;
-  cleanup-list | cleanup-interactive) cmd_cleanup_list "$@" ;;
+  cleanup-list) cmd_cleanup_list "$@" ;;
   *)
     cat >&2 <<'EOF'
 ultrablitz-utils.sh: unknown subcommand
 Usage: ultrablitz-utils.sh <subcommand> [args]
-  version | doctor [--json] | resolve-companion | repo-hash | state-dir
+  doctor [--json] | resolve-companion | resolve-model | repo-hash | state-dir
   session-new | session-read <dir> | session-write <dir> <json-patch>
   validate-output --contract <f> --input <f> [--baseline <f>]
   codex-turn --session <dir> --prompt-file <f> [--resume] [--timeout-ms N]

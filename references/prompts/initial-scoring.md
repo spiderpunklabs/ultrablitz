@@ -1,13 +1,7 @@
 # Initial Scoring Prompt — Phase 2, Round 1
 
-Assemble this prompt by interpolating:
-- `{PLAN_TEXT}` — the user's plan/idea
-- `{DEBATE_PROTOCOL}` — contents of `references/debate-protocol.md` (the XML blocks)
-- `{OUTPUT_CONTRACT}` — the dynamic contract generated from the agreed framework
-
-Write the assembled prompt to the session temp directory and invoke Codex.
-If Phase 1 was completed, use `--resume-last` to continue the thread.
-If `--skip-framework` was used, this is a fresh task (no `--resume-last`).
+First plan-evaluation turn against the locked framework.
+Slots: `{PLAN_TEXT}`, `{DEBATE_PROTOCOL}`, `{OUTPUT_CONTRACT}` (generated from the agreed framework).
 
 ```xml
 <task>

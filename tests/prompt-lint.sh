@@ -11,7 +11,7 @@
 . "$(dirname "$0")/lib.sh"
 
 # The one and only table of legal placeholder slots. Add here deliberately.
-KNOWN_SLOTS="EXPECTED_HEADERS CATEGORY_LIST OFFENDING_OUTPUT PLAN_TEXT PLAN_SUMMARY FRAMEWORK_PROPOSAL DEBATE_PROTOCOL OUTPUT_CONTRACT CATEGORIES"
+KNOWN_SLOTS="EXPECTED_HEADERS CATEGORY_LIST OFFENDING_OUTPUT PLAN_TEXT PLAN_SUMMARY FRAMEWORK_PROPOSAL FRAMEWORK_CONTRACT DEBATE_PROTOCOL OUTPUT_CONTRACT CATEGORIES"
 
 # Slots are UPPER_SNAKE tokens in braces. Mixed-case braces ({Category}) are
 # prose examples inside templates, not interpolation slots.
@@ -94,7 +94,37 @@ for tok in "Evidence:" "Impact:" "Suggestion:" "[CRITICAL]" "[MAJOR]" "[MINOR]";
   assert_not_contains "$STRIPPED" "$tok"
 done
 
-# --- (e) size budget (INV-BUDGET-1) --------------------------------------------
+# --- (e) Phase 1 contract is single-sourced (B2) --------------------------------
+# Both Phase 1 templates interpolate the one contract block defined in
+# references/output-contract.md, so round 1 and rounds 2+ demand the same shape.
+CONTRACT_DOC="$UB_ROOT/references/output-contract.md"
+CONTRACT_MARKER='Phase 1 contract — interpolated as {FRAMEWORK_CONTRACT}'
+
+for f in framework-proposal.md framework-rebuttal.md; do
+  t "$f carries the {FRAMEWORK_CONTRACT} slot"
+  if grep -q -F '{FRAMEWORK_CONTRACT}' "$PROMPTS_DIR/$f"; then
+    _ok
+  else
+    _no "missing {FRAMEWORK_CONTRACT} slot inside <structured_output_contract>"
+  fi
+done
+
+t "output-contract.md carries the Phase 1 contract marker exactly once"
+marker_count="$(grep -c -F "$CONTRACT_MARKER" "$CONTRACT_DOC")" || true
+assert_eq "$marker_count" "1"
+
+t "the Phase 1 contract section holds exactly one fenced block"
+# Count fence lines between the marker heading and the next '## ' heading:
+# exactly one fenced block means exactly two fence lines.
+fence_lines="$(awk -v marker="$CONTRACT_MARKER" '
+  index($0, marker)            { insec = 1; next }
+  insec && /^```/              { n++; infence = !infence; next }
+  insec && !infence && /^## /  { insec = 0 }
+  END { print n + 0 }
+' "$CONTRACT_DOC")"
+assert_eq "$fence_lines" "2"
+
+# --- (f) size budget (INV-BUDGET-1) --------------------------------------------
 for f in "$PROMPTS_DIR"/*.md; do
   t "${f##*/} is under 30000 bytes (INV-BUDGET-1)"
   bytes="$(wc -c < "$f" | tr -d '[:space:]')"

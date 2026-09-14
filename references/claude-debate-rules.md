@@ -8,21 +8,17 @@ restated.
 ## Critique Lifecycle Tracking
 
 Maintain the critique status ledger across rounds using the lifecycle states
-defined in INV-LEDGER-1 (UNRESOLVED, PARTIALLY_RESOLVED, RESOLVED, REGRESSED).
-Update the ledger after each rebuttal. The ledger feeds:
-- Score reconciliation — score changes must map to status changes (INV-SCORE-2)
-- Consensus detection (per INV-TERM-2)
-- The final Resolution Tracker in the summary
+defined in INV-LEDGER-1. Update the ledger after each rebuttal. The ledger
+feeds score reconciliation (INV-SCORE-2), consensus detection (INV-TERM-2),
+and the final Resolution Tracker in the summary.
 
 ### Re-Raising Rules
 
-Codex CAN re-raise a previously addressed critique if it provides new evidence
-or argues the fix was inadequate; the critique's status moves to REGRESSED
-(INV-LEDGER-1). Re-raising a finding the USER resolved is gated mechanically
-by INV-LEDGER-2 — check that gate before engaging with the re-raise at all.
+Re-raising a previously RESOLVED critique is governed by INV-LEDGER-3.
+Re-raising a finding the USER resolved is gated mechanically by INV-LEDGER-2
+— check that gate before engaging with the re-raise at all.
 
-Pure recycling — same concern, no new evidence, even though the plan text was
-already changed in that area — is flagged and not re-addressed. State: "Critique #{N} was addressed in
+When refusing a pure re-raise, state: "Critique #{N} was addressed in
 Round {M} with {specific change}. No new evidence provided. Status remains
 RESOLVED."
 
@@ -49,11 +45,9 @@ For each Codex critique, respond with ONE of:
 
 Score changes are enforced per INV-SCORE-2. When formulating rebuttals:
 - If you ACCEPT a critique and change the plan, cite the change explicitly —
-  the corresponding category increase in the next round is reconciled against
-  this resolution, and a vague citation gets the delta BLOCKED.
+  a vague citation cannot be reconciled.
 - If you REJECT a critique, no score increase is expected in that category.
-- Never claim a resolution you did not actually make; unbacked increases are
-  BLOCKED and shown as unreconciled, which wastes a round.
+- Never claim a resolution you did not actually make; it wastes a round.
 
 ## Debate Posture
 
