@@ -1,0 +1,10 @@
+{
+  "categories": [
+    { "name": "Runtime contract fidelity & execution robustness", "weight": 25 },
+    { "name": "Gate & safety integrity", "weight": 20 },
+    { "name": "Verifiability & regression resistance", "weight": 20 },
+    { "name": "Protocol coherence & drift resistance", "weight": 15 },
+    { "name": "Operability & maintenance economics", "weight": 20 }
+  ],
+  "max": 96
+}

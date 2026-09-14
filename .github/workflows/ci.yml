@@ -1,0 +1,31 @@
+# CI for the ultrablitz skill: lint + the offline test suite.
+#
+# `make smoke` is deliberately NOT run here: it spends real Codex API usage and
+# needs interactive ChatGPT auth, neither of which belongs in CI. The live
+# contract is covered at release time by `make release-check` (test + smoke),
+# and `make tag` refuses to proceed without fresh smoke evidence.
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # jq is preinstalled on ubuntu runners; fail loudly if that ever changes.
+      - name: verify jq
+        run: jq --version
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: lint
+        run: make lint
+
+      - name: test
+        run: make test

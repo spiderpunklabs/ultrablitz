@@ -1,0 +1,18 @@
+{
+  "_recorded": "2026-08-27 from `codex-companion.mjs setup --json` (1.0.3), healthy state. Caveat E11: this probe reported ready:true / loggedIn:true minutes before a real turn failed on refresh-token reuse — readiness must be confirmed with a smoke turn, not this payload.",
+  "ready": true,
+  "node": { "available": true, "detail": "v25.9.0" },
+  "npm": { "available": true, "detail": "11.12.1" },
+  "codex": { "available": true, "detail": "codex-cli 0.150.1; advanced runtime available" },
+  "auth": {
+    "available": true,
+    "loggedIn": true,
+    "detail": "ChatGPT login active",
+    "source": "app-server",
+    "authMethod": "chatgpt",
+    "verified": true
+  },
+  "sessionRuntime": { "mode": "direct", "label": "direct startup" },
+  "reviewGateEnabled": false,
+  "nextSteps": []
+}
