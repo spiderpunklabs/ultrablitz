@@ -38,8 +38,14 @@ deny() {
   exit 0
 }
 
+STATE_DIR_UNTRUSTED=0
+
 gate_log() {
   command -v jq >/dev/null 2>&1 || return 0
+  # Never write into a directory the trust check just rejected (defect S13):
+  # [ -d ] follows symlinks, so without this flag the log line would land
+  # wherever the symlink points.
+  [ "$STATE_DIR_UNTRUSTED" = 1 ] && return 0
   [ -d "$STATE_DIR" ] || return 0
   # -c: one JSON object per line (this file is JSON Lines, not a JSON document).
   jq -n -c --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg ev "$1" --arg detail "$2" \
@@ -75,10 +81,12 @@ path_untrusted() {
 }
 
 if [ -L "$STATE_DIR" ] || path_untrusted "$STATE_DIR"; then
+  STATE_DIR_UNTRUSTED=1
   deny "Ultrablitz gate: state directory is a symlink or not owned by you ($STATE_DIR). Refusing to trust it. Clear with: $CLEAR_CMD"
 fi
 STATE_MODE="$(stat -f '%Lp' "$STATE_DIR" 2>/dev/null || stat -c '%a' "$STATE_DIR" 2>/dev/null)"
 if [ "$STATE_MODE" != "700" ]; then
+  STATE_DIR_UNTRUSTED=1
   deny "Ultrablitz gate: state directory mode is $STATE_MODE, expected 700 ($STATE_DIR). Clear with: $CLEAR_CMD"
 fi
 if path_untrusted "$LOCK_FILE" || [ ! -f "$LOCK_FILE" ]; then

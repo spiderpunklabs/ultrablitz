@@ -1,6 +1,7 @@
 {
-  "date": "2026-09-14T09:24:34Z",
-  "codexVersion": "codex-cli 0.150.1",
+  "date": "2026-09-14T11:02:44Z",
+  "codexVersion": "codex-cli 0.154.0",
   "pluginVersion": "1.0.3",
+  "model": "gpt-5.3-codex-spark",
   "schemaDiff": []
 }

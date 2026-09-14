@@ -93,10 +93,48 @@ assert_json "$out" '.failureClass' 'CONTINUITY'
 t "session-mismatch: message names the session id"
 assert_contains "$(printf '%s' "$out" | jq -r .message)" "sessionId changed"
 
+# --- resume predicate (plan A3 / defect C3) -----------------------------------
+SD="$(new_session)"
+t "resume on a fresh session is refused, not honoured (no debate turn exists)"
+out="$(run_scenario happy "$SD" --resume)"
+assert_json "$out" '.ok' 'true'
+t "resume refusal is reported"
+rr="$(printf '%s' "$out" | jq -r '.resumeRefused // ""')"
+assert_contains "$rr" "no validated debate turn"
+t "refused resume launches fresh — no --resume-last reached the companion"
+argv="$(jq -r '.argv[0]' "$SD/stub-state.json")"
+assert_not_contains "$argv" "--resume-last"
+
+SD="$(new_session)"
+t "resume after only a smoke turn is refused (would graft onto the smoke thread)"
+out="$(run_scenario happy "$SD" --label smoke)"
+out="$(run_scenario happy "$SD" --resume --label p2-r1)"
+assert_json "$out" '.ok' 'true'
+rr="$(printf '%s' "$out" | jq -r '.resumeRefused // ""')"
+assert_contains "$rr" "smoke"
+t "smoke-refused resume also launched fresh"
+argv="$(jq -r '.argv[1]' "$SD/stub-state.json")"
+assert_not_contains "$argv" "--resume-last"
+
+SD="$(new_session)"
+t "resume after a validated debate turn IS honoured"
+out="$(run_scenario happy "$SD" --label p1-r1)"
+out="$(run_scenario happy "$SD" --resume --label p1-r2)"
+assert_json "$out" '.resumeRefused' 'null'
+argv="$(jq -r '.argv[1]' "$SD/stub-state.json")"
+assert_contains "$argv" "--resume-last"
+t "codex-turn recorded the turn for the predicate itself (sessionRecorded)"
+assert_json "$out" '.sessionRecorded' 'true'
+t "session.json carries lastTurnLabel from the code, not the caller"
+assert_json "$(cat "$SD/session.json")" '.lastTurnLabel' 'p1-r2'
+
 # --- in-flight job -----------------------------------------------------------
 SD="$(new_session)"
-t "inflight: a running job is waited out and the turn then succeeds"
-out="$(run_scenario inflight "$SD" --resume)"
+t "inflight: seed turn succeeds"
+out="$(run_scenario inflight "$SD" --label p1-r1)"
+assert_json "$out" '.ok' 'true'
+t "inflight: a running job is waited out and the resumed turn then succeeds"
+out="$(run_scenario inflight "$SD" --resume --label p1-r2)"
 assert_json "$out" '.ok' 'true'
 t "inflight: no re-seed happened (thread preserved)"
 assert_json "$out" '.threadId' '01a0-stub-thread-0001'
@@ -166,6 +204,95 @@ assert_json "$resumed" '.round' '1'
 t "interrupt: next turn continues on that thread"
 out="$(run_scenario happy "$SD" --resume --label after-interrupt)"
 assert_json "$out" '.threadId' '01a0-stub-thread-0001'
+
+# --- model resolution and account refusals (plan E1/E2/E5) --------------------
+SD="$(new_session)"
+t "resolve-model with no input picks the newest preference model"
+out="$(env -u ULTRABLITZ_MODEL bash "$UTILS" resolve-model --session "$SD")"
+assert_json "$out" '.model' 'gpt-6-astra'
+t "resolve-model records origin preference"
+assert_json "$out" '.origin' 'preference'
+t "resolve-model persists into session.json"
+assert_json "$(cat "$SD/session.json")" '.model' 'gpt-6-astra'
+t "resolve-model: --model flag wins and is explicit"
+out="$(ULTRABLITZ_MODEL=envmodel bash "$UTILS" resolve-model --session "$SD" --model flagmodel)"
+assert_json "$out" '.model' 'flagmodel'
+t "resolve-model: flag origin is explicit"
+assert_json "$out" '.origin' 'explicit'
+t "resolve-model: ULTRABLITZ_MODEL is explicit too"
+out="$(ULTRABLITZ_MODEL=envmodel bash "$UTILS" resolve-model --session "$SD")"
+assert_json "$out" '.origin' 'explicit'
+t "resolve-model: .ultrablitz.json model is used when nothing explicit is set"
+cfgdir="$SANDBOX/cfgrepo"; mkdir -p "$cfgdir"
+printf '{"model":"cfg-model"}\n' > "$cfgdir/.ultrablitz.json"
+out="$(cd "$cfgdir" && env -u ULTRABLITZ_MODEL bash "$UTILS" resolve-model --session "$SD")"
+assert_json "$out" '.model' 'cfg-model'
+t "resolve-model: config origin is config"
+assert_json "$out" '.origin' 'config'
+
+SD="$(new_session)"
+env -u ULTRABLITZ_MODEL bash "$UTILS" resolve-model --session "$SD" >/dev/null
+t "model-refused: preference model is downgraded once and the turn succeeds"
+out="$(run_scenario model-refused "$SD")"
+assert_json "$out" '.ok' 'true'
+t "model-refused: the turn ran on the fallback model"
+assert_json "$out" '.model' 'gpt-5.3-codex-spark'
+t "model-refused: the downgrade is reported"
+assert_json "$out" '.modelDowngraded.from' 'gpt-6-astra'
+t "model-refused: two attempts (refusal + retry)"
+assert_json "$out" '.attempts' '2'
+t "model-refused: session.json now names the model actually in use"
+assert_json "$(cat "$SD/session.json")" '.model' 'gpt-5.3-codex-spark'
+t "model-refused: the downgrade is recorded with its reason"
+assert_json "$(cat "$SD/session.json")" '.modelDowngraded.from' 'gpt-6-astra'
+t "model-refused: the fallback flag actually reached the companion"
+argv="$(jq -r '.argv[1]' "$SD/stub-state.json")"
+assert_contains "$argv" "--model gpt-5.3-codex-spark"
+
+SD="$(new_session)"
+env -u ULTRABLITZ_MODEL bash "$UTILS" resolve-model --session "$SD" >/dev/null
+t "model-refused-all: every candidate refused ends FATAL"
+out="$(run_scenario model-refused-all "$SD")"
+assert_json "$out" '.failureClass' 'FATAL'
+t "model-refused-all: the message says models were refused"
+assert_contains "$(printf '%s' "$out" | jq -r .message)" "refused"
+t "model-refused-all: session untouched by the failed turn"
+assert_json "$(cat "$SD/session.json")" '.round' '0'
+
+SD="$(new_session)"
+t "model-explicit-refused: a user-named model is never downgraded"
+out="$(run_scenario model-refused-all "$SD" --model gpt-6-astra)"
+assert_json "$out" '.failureClass' 'FATAL'
+t "model-explicit-refused: the refusal is reported, with alternatives"
+assert_contains "$(printf '%s' "$out" | jq -r .message)" "refused by this account"
+t "model-explicit-refused: exactly one attempt — no silent substitution"
+assert_json "$out" '.attempts' '1'
+t "model-explicit-refused: no downgrade recorded"
+assert_json "$out" '.modelDowngraded' 'null'
+
+SD="$(new_session)"
+env -u ULTRABLITZ_MODEL bash "$UTILS" resolve-model --session "$SD" >/dev/null
+t "unknown-shape 400: one bounded probe of the next candidate, then success"
+out="$(run_scenario model-refused-unknown-shape "$SD")"
+assert_json "$out" '.ok' 'true'
+t "unknown-shape 400: probe recorded as modelSelectionUnknown"
+assert_json "$(cat "$SD/session.json")" '.modelSelectionUnknown.from' 'gpt-6-astra'
+t "unknown-shape 400: the run continues on the probed model"
+assert_json "$out" '.model' 'gpt-5.3-codex-spark'
+
+# --- validation artifact is a hard gate (plan A9 / defect S2) ------------------
+SD="$(new_session)"
+printf 'this is not a contract\n' > "$SD/bad-contract.json"
+t "an unusable validation artifact is FORMAT, never success"
+out="$(STUB_SCENARIO=happy STUB_STATE="$SD/stub-state.json" bash "$UTILS" codex-turn \
+  --session "$SD" --prompt-file "$SD/prompt.md" --contract "$SD/bad-contract.json" 2>/dev/null)"
+assert_json "$out" '.ok' 'false'
+t "the failure names the validation artifact problem"
+assert_json "$out" '.validationUnreadable' 'true'
+t "validator stderr is preserved for diagnosis, not discarded"
+[ -s "$SD/turn.validation.err" ] && _ok || _no "validation stderr file empty or missing"
+t "hard-gated turn mutated nothing"
+assert_json "$(cat "$SD/session.json")" '.round' '0'
 
 # --- model / effort passthrough ----------------------------------------------
 # A live account can be refused the companion's default model ("not supported

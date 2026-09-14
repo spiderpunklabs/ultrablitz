@@ -53,13 +53,17 @@ most often: a wrong-architecture `codex` install, and an unregistered hook.
 | `--skip-framework` | use `.ultrablitz.json`'s framework, or a generic 4×25 rubric |
 | `--reviewer codex\|claude` | `claude` runs ADVISORY: labelled, never authoritative |
 | `--out <dir>` | where to write `debate-log.md` and `refined-plan.md` |
-| `--effort`, `--model` | passed through to Codex |
+| `--model M` | pin the Codex model for the run; passed through on every turn, never auto-changed |
+| `--effort E` | Codex reasoning effort; passed through on every turn |
 | `--cleanup` | list stale sessions and the exact command to remove each |
 | `--force-new` | take over a stale per-repo run lock |
 
 A run ends with a confirmation gate: until you choose Execute, Modify, or Discard,
 a PreToolUse hook blocks Edit/Write/NotebookEdit/Bash so a refined plan cannot
-quietly become an implementation. `gate-confirm` clears it; `gate-clear` discards.
+quietly become an implementation. Execute is the one thing Claude can clear by
+itself, through a single pre-validated confirmation write the hook carves out;
+everything else — including discarding — is a command you run yourself (see
+[Troubleshooting](#troubleshooting)).
 
 ### What a run looks like
 
@@ -91,10 +95,10 @@ own improvement plan.
 
 | Piece | Role |
 |---|---|
-| `SKILL.md` | what Claude does — judgement only, ~230 lines |
+| `SKILL.md` | what Claude does — judgement only, nothing mechanical |
 | `references/protocol-invariants.md` | the single normative home of every mechanical rule (`INV-*`) |
 | `references/session-schema.md` | `session.json` fields, atomic writes, the run lock |
-| `references/prompts/*.md` | prompt templates, one slot table |
+| `references/prompts/*.md` | prompt templates; every legal `{SLOT}` is listed in `tests/prompt-lint.sh` |
 | `hooks/ultrablitz-utils.sh` | every mechanical step, as testable subcommands |
 | `hooks/ultrablitz-gate.sh` | the PreToolUse confirmation gate |
 | `tests/` | unit, gate, contract, and end-to-end suites |
@@ -161,14 +165,31 @@ wrong architecture. From a shell where `arch` prints your real CPU:
 **Doctor says ready but the first turn fails on a refresh token** — the setup probe
 does not exercise token refresh. Run `codex logout && codex login`.
 
-**`The 'gpt-5.x' model is not supported when using Codex with a ChatGPT account`** —
-the companion's default model is not available on your plan. This is a 400 at turn
-time, so no pre-flight check can see it. Pass a supported model:
-`/ultrablitz --model spark ...`, or `ULTRABLITZ_MODEL=spark` for a whole session,
-or `ULTRABLITZ_SMOKE_MODEL=spark make smoke` for the release smoke test.
+**`The '<model>' model is not supported when using Codex with a ChatGPT account`** —
+your plan cannot use that model. The skill now picks one for you: `--model`, then
+`ULTRABLITZ_MODEL`, then `.ultrablitz.json`'s `"model"`, then its built-in
+preference list (newest first: `gpt-6-astra`, then `gpt-5.3-codex-spark`, alias
+`spark`), then whatever the companion defaults to. A refusal is a 400 at turn time,
+so the run spends one throwaway pre-flight turn to find it: a model taken from the
+preference list is silently downgraded to the next candidate, and the debate starts
+on a model that works. A model **you** named is never swapped behind your back — the
+run stops and names the alternatives. Set `ULTRABLITZ_MODEL=spark` for a session,
+`"model": "spark"` in `.ultrablitz.json` for a repo, or
+`ULTRABLITZ_SMOKE_MODEL=spark make smoke` for the release smoke test.
 
-**Everything is blocked and the gate will not clear** — `bash hooks/ultrablitz-utils.sh gate-status`
-shows the run; `gate-confirm` clears it properly, `gate-clear` discards it.
+**Everything is blocked and the gate will not clear** — this is the human's route,
+and it is the only one that works. Run it **in your own terminal**:
+
+```bash
+bash hooks/ultrablitz-utils.sh gate-status    # which run is holding the gate
+bash hooks/ultrablitz-utils.sh gate-confirm   # approve: clears the gate
+bash hooks/ultrablitz-utils.sh gate-clear     # discard: removes the lock
+```
+
+A command you type yourself is not a Claude tool call, so the PreToolUse hook never
+sees it. Claude cannot run these while the gate is armed — the hook denies its Bash
+calls first, `gate-confirm` included. From inside the session Claude has exactly one
+route, the pre-validated confirmation write the hook carves out for Execute.
 
 **"a Codex task is still running"** — another Codex job in this Claude session holds
 the thread. Wait for it, or check `/codex:status`. Ultrablitz waits once with a

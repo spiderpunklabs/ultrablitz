@@ -185,6 +185,25 @@ session I/O, or gate logic in prose or ad-hoc Bash. The subcommands are the
 normative implementation; if SKILL.md's description and a subcommand's
 behavior diverge, the subcommand wins and SKILL.md is the bug.
 
+## Model selection
+
+### INV-MODEL-1 — Explicit model choices are never auto-changed
+
+The model for a run is resolved once, before the first debate turn, in this
+order: `--model` flag, then `ULTRABLITZ_MODEL`, then `.ultrablitz.json`'s
+`model` key, then the built-in newest-first preference list, then the
+companion's own default. A model named by the user (flag or environment) is
+**explicit** and is never substituted: if the account refuses it, the run stops
+and reports the refusal with alternatives. Only a model chosen from the
+preference list may be downgraded, at most once per turn, and only on a
+recognised refusal (HTTP 400 `invalid_request_error` naming the model) or, once
+per run, on an unrecognised 400 (recorded as `modelSelectionUnknown`). Every
+substitution is written to `session.json` in the same step that performs it; if
+that write fails the run aborts rather than proceed with state that names a
+different model than the one in use. The resolved model is reported in the
+final summary and the persisted artifacts, because a score is not comparable
+across models.
+
 ## Budget
 
 ### INV-BUDGET-1 — Prompt budget

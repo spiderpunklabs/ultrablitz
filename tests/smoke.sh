@@ -49,23 +49,27 @@ REG="$(printf '%s' "$DOC" | jq -r '.checks[] | select(.name=="registration") | .
 [ "$REG" = "ok" ] || printf 'smoke: WARNING — gate hook %s (not required for this test; run `bash install.sh --register` for a full install)\n' "$REG"
 printf 'smoke: doctor runtime checks ok\n'
 
-# 2. fresh session + trivial prompt.
+# 2. fresh session + trivial prompt + model resolution (plan E1: newest-first
+#    preference list unless the operator names one).
 printf 'smoke: [2/4] creating session ...\n'
 SD="$(bash "$UTILS" session-new)" || fail "session-new failed"
 trap 'rm -rf "$SD"' EXIT
 printf 'Reply with the single word OK and nothing else.\n' > "$SD/prompt.md"
+RM_OUT="$(bash "$UTILS" resolve-model --session "$SD" ${ULTRABLITZ_SMOKE_MODEL:+--model "$ULTRABLITZ_SMOKE_MODEL"})" \
+  || fail "resolve-model failed"
+printf 'smoke: model %s (origin %s)\n' \
+  "$(printf '%s' "$RM_OUT" | jq -r '.model // "companion default"')" \
+  "$(printf '%s' "$RM_OUT" | jq -r '.origin')"
 
 # 3. one real turn, 5-minute ceiling. No --contract: the reply is a bare OK,
 #    we assert on it directly below.
-# ULTRABLITZ_SMOKE_MODEL overrides the companion's default model. Needed when
-# the account cannot use that default — e.g. a ChatGPT-plan account is refused
-# the current default with "model is not supported when using Codex with a
-# ChatGPT account", which is a 400 at turn time, not something doctor can see.
-printf 'smoke: [3/4] running one Codex turn (timeout 300000ms%s) ...\n' \
-  "${ULTRABLITZ_SMOKE_MODEL:+, model $ULTRABLITZ_SMOKE_MODEL}"
+# The turn takes its model from the session (resolve-model above). A refusal
+# of a preference-list model downgrades automatically inside codex-turn; a
+# refusal of an ULTRABLITZ_SMOKE_MODEL (explicit) stops the run — per
+# INV-MODEL-1.
+printf 'smoke: [3/4] running one Codex turn (timeout 300000ms) ...\n'
 OUT="$(bash "$UTILS" codex-turn --session "$SD" --prompt-file "$SD/prompt.md" \
-  --timeout-ms 300000 --label smoke \
-  ${ULTRABLITZ_SMOKE_MODEL:+--model "$ULTRABLITZ_SMOKE_MODEL"} 2>/dev/null)"
+  --timeout-ms 300000 --label smoke 2>/dev/null)"
 [ "$(printf '%s' "$OUT" | jq -r '.ok' 2>/dev/null)" = "true" ] \
   || fail "codex-turn not ok: $(printf '%s' "$OUT" | jq -r '"[\(.failureClass // "?")] \(.message // "no message")"' 2>/dev/null)"
 
@@ -84,11 +88,13 @@ PLUGIN_VERSION="unknown"
 if [ -r "$PLUGIN_MANIFEST" ]; then
   PLUGIN_VERSION="$(jq -r '.version // "unknown"' "$PLUGIN_MANIFEST" 2>/dev/null)"
 fi
+SMOKE_MODEL="$(printf '%s' "$OUT" | jq -r '.model // "companion default"')"
 jq -n \
   --arg date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
   --arg cv "$CODEX_VERSION" \
   --arg pv "$PLUGIN_VERSION" \
-  '{date:$date, codexVersion:$cv, pluginVersion:$pv, schemaDiff:[]}' > "$LAST_SMOKE" \
+  --arg m "$SMOKE_MODEL" \
+  '{date:$date, codexVersion:$cv, pluginVersion:$pv, model:$m, schemaDiff:[]}' > "$LAST_SMOKE" \
   || fail "could not write $LAST_SMOKE"
 
 printf 'smoke: PASS — codex %s, plugin %s\n' "$CODEX_VERSION" "$PLUGIN_VERSION"

@@ -24,6 +24,11 @@ set -uo pipefail
 
 UB_VERSION="6.0.0"
 
+# Model preference, newest first. The single place this order is stated.
+# Per INV-MODEL-1: a model the USER names is never auto-changed; only a model
+# taken from this list is downgraded when the account refuses it.
+UB_MODEL_PREFERENCE="gpt-6-astra gpt-5.3-codex-spark"
+
 # --- paths -------------------------------------------------------------------
 
 ub_state_dir() {
@@ -98,6 +103,76 @@ ub_pid_start() {
 }
 
 ub_now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
+
+# --- model resolution --------------------------------------------------------
+
+# Read the "model" key from .ultrablitz.json (repo root, then CWD; first wins).
+ub_config_model() {
+  local f
+  for f in "$(ub_repo_root)/.ultrablitz.json" "$PWD/.ultrablitz.json"; do
+    [ -r "$f" ] || continue
+    local m
+    m="$(jq -r '.model // empty' "$f" 2>/dev/null)"
+    if [ -n "$m" ]; then
+      printf '%s\n' "$m"
+      return 0
+    fi
+  done
+  return 1
+}
+
+# Resolve the model for a run and say where it came from.
+# Prints "<model>\t<origin>"; origin is explicit|config|preference|companion.
+# Order: --model flag > ULTRABLITZ_MODEL > .ultrablitz.json > preference list.
+ub_resolve_model() {
+  local flag="${1:-}"
+  if [ -n "$flag" ]; then
+    printf '%s\texplicit\n' "$flag"
+    return 0
+  fi
+  if [ -n "${ULTRABLITZ_MODEL:-}" ]; then
+    printf '%s\texplicit\n' "$ULTRABLITZ_MODEL"
+    return 0
+  fi
+  local cfg
+  if cfg="$(ub_config_model)"; then
+    printf '%s\tconfig\n' "$cfg"
+    return 0
+  fi
+  local first
+  first="$(printf '%s' "$UB_MODEL_PREFERENCE" | awk '{print $1}')"
+  if [ -n "$first" ]; then
+    printf '%s\tpreference\n' "$first"
+    return 0
+  fi
+  printf '\tcompanion\n'
+}
+
+# Next candidate after $1 in the preference list; empty when exhausted.
+ub_next_model() {
+  printf '%s' "$UB_MODEL_PREFERENCE" | awk -v cur="$1" '
+    { for (i = 1; i <= NF; i++) if ($i == cur && i < NF) { print $(i+1); exit } }'
+}
+
+# Does this failure mean "the account may not use that model"?
+# Structured: HTTP 400 + invalid_request_error + the model named in the message.
+# Anything else is an ordinary failure — we never change models on a guess.
+# The error usually reaches us inside job.summary, where its quotes are
+# JSON-escaped (`\"status\":400`), so the match must tolerate backslashes.
+UB_STATUS_400_RE='status[\\"]*[[:space:]]*:[[:space:]]*400'
+
+ub_is_model_refusal() {
+  local blob="$1" model="$2"
+  printf '%s' "$blob" | grep -qE "$UB_STATUS_400_RE" || return 1
+  printf '%s' "$blob" | grep -q 'invalid_request_error' || return 1
+  printf '%s' "$blob" | grep -qF "$model" || return 1
+  return 0
+}
+
+# A 400 we do not recognise, on a model nobody asked for: worth one probe.
+ub_is_unknown_400() {
+  printf '%s' "$1" | grep -qE "$UB_STATUS_400_RE"
+}
 
 # --- prerequisites -----------------------------------------------------------
 
@@ -254,13 +329,15 @@ cmd_session_read() {
   cs="$(jq -r '.claudeSessionId // "unknown"' "$sd/session.json")"
   local mine="${CLAUDE_SESSION_ID:-unknown}"
   if [ "$cs" != "$mine" ]; then
-    jq --arg m "$mine" '. + {foreign:true, foreignDetail:("owned by Claude session " + .claudeSessionId + ", current is " + $m)}' "$sd/session.json"
+    # $cs, not the raw field: a null claudeSessionId would make jq abort on
+    # null + string (defect S10), and session-write accepts arbitrary patches.
+    jq --arg m "$mine" --arg owner "$cs" '. + {foreign:true, foreignDetail:("owned by Claude session " + $owner + ", current is " + $m)}' "$sd/session.json"
   else
     jq '. + {foreign:false}' "$sd/session.json"
   fi
 }
 
-# session-write <dir> <json-patch>   (shallow merge, atomic)
+# session-write <dir> <json-patch>   (shallow merge, atomic, single-writer)
 cmd_session_write() {
   local sd="${1:?session dir required}" patch="${2:?json patch required}"
   ub_check_leaf "$sd/session.json" || return 1
@@ -268,11 +345,68 @@ cmd_session_write() {
     echo "session-write: patch is not valid JSON" >&2
     return 1
   }
+
+  # Single-writer enforcement lives HERE, in the only code path that writes —
+  # not in caller discipline. There is deliberately no override flag: a run is
+  # not resumable from another Claude session, and the recovery for an
+  # abandoned run is `run-lock --force-new` plus a fresh session.
+  # Environment contract, one row per case:
+  #   stored "unknown", env present  -> adopt (claim the session, record when)
+  #   stored concrete,  env missing  -> refuse (absent can never mean "matches")
+  #   stored concrete,  env differs  -> refuse
+  #   both unknown/empty             -> allow (single-writer is vacuous)
+  local stored_cs env_cs="" adopt=""
+  stored_cs="$(jq -r '.claudeSessionId // "unknown"' "$sd/session.json")"
+  env_cs="${CLAUDE_SESSION_ID:-}"
+  if [ "$stored_cs" = "unknown" ] && [ -n "$env_cs" ]; then
+    adopt="$env_cs"
+  elif [ "$stored_cs" != "unknown" ] && [ -z "$env_cs" ]; then
+    echo "session-write: refused — session belongs to Claude session '$stored_cs' and CLAUDE_SESSION_ID is not set." >&2
+    echo "session-write: recovery: run-lock --force-new and a fresh session-new; foreign sessions are never written." >&2
+    return 1
+  elif [ "$stored_cs" != "unknown" ] && [ "$env_cs" != "$stored_cs" ]; then
+    echo "session-write: refused — session belongs to Claude session '$stored_cs', current is '$env_cs'." >&2
+    echo "session-write: recovery: run-lock --force-new and a fresh session-new; foreign sessions are never written." >&2
+    return 1
+  fi
+
   local tmp="$sd/session.json.tmp"
-  jq --argjson p "$patch" --arg now "$(ub_now)" '. * $p * {lastActiveAt:$now}' "$sd/session.json" > "$tmp" || return 1
+  if [ -n "$adopt" ]; then
+    jq --argjson p "$patch" --arg now "$(ub_now)" --arg cs "$adopt" \
+      '. * $p * {lastActiveAt:$now, claudeSessionId:$cs, claudeSessionIdAdoptedAt:$now}' \
+      "$sd/session.json" > "$tmp" || return 1
+  else
+    jq --argjson p "$patch" --arg now "$(ub_now)" '. * $p * {lastActiveAt:$now}' "$sd/session.json" > "$tmp" || return 1
+  fi
   # Only publish a complete file: jq wrote to tmp, rename is atomic.
   mv -f "$tmp" "$sd/session.json" || return 1
   printf 'ok\n'
+}
+
+# resolve-model --session <dir> [--model <flag>]
+# Resolves the run's model once (plan E1) and records it atomically.
+cmd_resolve_model() {
+  local sd="" flag=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --session) sd="$2"; shift 2 ;;
+      --model) flag="$2"; shift 2 ;;
+      *) echo "resolve-model: unknown arg $1" >&2; return 2 ;;
+    esac
+  done
+  [ -d "${sd:-}" ] || { echo "resolve-model: --session <dir> required" >&2; return 2; }
+  local line m origin
+  line="$(ub_resolve_model "$flag")"
+  m="$(printf '%s' "$line" | cut -f1)"
+  origin="$(printf '%s' "$line" | cut -f2)"
+  if [ -n "$m" ]; then
+    cmd_session_write "$sd" "$(jq -n -c --arg m "$m" --arg o "$origin" '{model:$m, modelOrigin:$o}')" >/dev/null || {
+      echo "resolve-model: could not record the model in session.json" >&2
+      return 1
+    }
+  fi
+  jq -n --arg m "$m" --arg o "$origin" \
+    '{model:(if $m=="" then null else $m end), origin:$o, preference:"'"$UB_MODEL_PREFERENCE"'"}'
 }
 
 # --- output validation -------------------------------------------------------
@@ -290,6 +424,14 @@ cmd_validate_output() {
   done
   [ -r "$contract" ] || { echo "validate-output: contract unreadable" >&2; return 2; }
   [ -r "$input" ] || { echo "validate-output: input unreadable" >&2; return 2; }
+  # A broken contract must fail loudly, not validate vacuously: without this, a
+  # non-JSON contract made every downstream jq comparison empty and the output
+  # scored as ok:true with zero checks performed.
+  jq -e '(.categories | type == "array") and (.categories | length > 0) and (.max | type == "number")' \
+    "$contract" >/dev/null 2>&1 || {
+    echo "validate-output: contract is not valid framework JSON ({categories:[{name,weight}...], max:N}): $contract" >&2
+    return 2
+  }
 
   local errors=() body
   body="$(cat "$input")"
@@ -317,9 +459,14 @@ cmd_validate_output() {
       printf "%s\t%s\n", name, score
     }')"
 
+  # jq does ALL of the JSON construction (defect S2): the previous awk printf
+  # string-pasting produced invalid JSON the moment a category name contained a
+  # quote or backslash, which then voided the whole validation silently.
   local names_json scores_json
-  names_json="$(printf '%s\n' "$parsed" | awk -F'\t' 'NF==2{print $1}' | jq -R . | jq -s .)"
-  scores_json="$(printf '%s\n' "$parsed" | awk -F'\t' 'NF==2{printf "{\"name\":\"%s\",\"score\":%s}\n", $1, $2}' | jq -s .)"
+  scores_json="$(printf '%s\n' "$parsed" | jq -Rs '
+    [split("\n")[] | select(length > 0) | split("\t") | select(length == 2)
+     | {name: .[0], score: (.[1] | tonumber)}]')"
+  names_json="$(printf '%s' "$scores_json" | jq '[.[].name]')"
   [ -z "$parsed" ] && { names_json='[]'; scores_json='[]'; }
 
   # Exact category-key match against the locked framework (case-insensitive).
@@ -426,7 +573,43 @@ cmd_codex_turn() {
   prev_thread="$(jq -r '.threadId // empty' "$sd/session.json")"
   prev_cs="$(jq -r '.codexSessionId // empty' "$sd/session.json")"
 
-  local attempts=0 format_repair=false
+  # Model + origin. A model the user named (flag or env) is "explicit" and is
+  # never auto-changed. Otherwise use what resolve-model recorded in the session.
+  local model_origin="companion"
+  if [ -n "$model" ]; then
+    model_origin="explicit"
+  else
+    local sm so
+    sm="$(jq -r '.model // empty' "$sd/session.json" 2>/dev/null)"
+    so="$(jq -r '.modelOrigin // empty' "$sd/session.json" 2>/dev/null)"
+    if [ -n "$sm" ]; then
+      model="$sm"
+      model_origin="${so:-preference}"
+    fi
+  fi
+
+  # Resume predicate — mechanical, fail-closed (plan A3). --resume is honoured
+  # only when a validated DEBATE turn exists to resume: session.json must carry
+  # a threadId and a lastTurnLabel that is not the smoke turn. Otherwise the
+  # resume silently grafts the debate onto the smoke thread (defect C3).
+  local resume_refused=""
+  if [ "$resume" = 1 ]; then
+    local last_label
+    last_label="$(jq -r '.lastTurnLabel // empty' "$sd/session.json" 2>/dev/null)"
+    if [ -z "$prev_thread" ] || [ -z "$last_label" ]; then
+      resume=0
+      resume_refused="no validated debate turn recorded (threadId/lastTurnLabel missing)"
+    else
+      case "$last_label" in
+        smoke*)
+          resume=0
+          resume_refused="last validated turn was the smoke turn"
+          ;;
+      esac
+    fi
+  fi
+
+  local attempts=0 format_repair=false model_downgrade="null" probe_used=0
 
   ub_launch() {
     # Launch in background, return jobId on stdout.
@@ -448,90 +631,178 @@ cmd_codex_turn() {
     fi
   }
 
-  local launch_json jobid
-  launch_json="$(ub_launch "$([ $resume = 1 ] && echo resume || echo fresh)" "$pf")"
-  if ! printf '%s' "$launch_json" | jq -e .jobId >/dev/null 2>&1; then
-    local err; err="$(cat "$sd/$label.launch.err" 2>/dev/null)"
-    # "task still running" — this session's own job (E13: foreign jobs are
-    # invisible to us, so there is no foreign branch).
-    if printf '%s%s' "$launch_json" "$err" | grep -qi 'still running'; then
-      local running
-      running="$(node "$comp" status --json --cwd "$repo" 2>/dev/null | jq -r '.running[0].id // empty')"
-      if [ -n "$running" ]; then
-        node "$comp" status "$running" --wait --timeout-ms "$timeout_ms" --json --cwd "$repo" >/dev/null 2>&1
-        launch_json="$(ub_launch "$([ $resume = 1 ] && echo resume || echo fresh)" "$pf")"
-      fi
-      if ! printf '%s' "$launch_json" | jq -e .jobId >/dev/null 2>&1; then
-        ub_turn_fail RETRYABLE "a Codex task is still running${running:+ (job $running)}; no state was changed"
-        return 1
-      fi
-    else
-      ub_turn_fail RETRYABLE "launch failed: $(printf '%s' "$err" | head -3 | tr '\n' ' ')"
-      return 1
-    fi
-  fi
-  jobid="$(printf '%s' "$launch_json" | jq -r .jobId)"
-
   ub_collect() {
     # wait then fetch; echoes the result JSON of storedJob.result plus sessionId
     node "$comp" status "$1" --wait --timeout-ms "$timeout_ms" --json --cwd "$repo" >"$sd/$label.status.json" 2>/dev/null
     node "$comp" result "$1" --json --cwd "$repo" 2>/dev/null
   }
 
-  local res_json
-  res_json="$(ub_collect "$jobid")"
-  attempts=$((attempts + 1))
+  # Launch → collect → extract, with a bounded model-fallback loop (plan E2/E5):
+  # at most one model switch per turn, and only for a model nobody explicitly
+  # asked for. Every switch is recorded in session.json in the same step, and a
+  # failed record aborts the turn — session.json never names a model other than
+  # the one in use.
+  local launch_json jobid res_json status raw thread csid
+  while :; do
+    launch_json="$(ub_launch "$([ $resume = 1 ] && echo resume || echo fresh)" "$pf")"
+    if ! printf '%s' "$launch_json" | jq -e .jobId >/dev/null 2>&1; then
+      local err; err="$(cat "$sd/$label.launch.err" 2>/dev/null)"
+      # "task still running" — this session's own job (E13: foreign jobs are
+      # invisible to us, so there is no foreign branch).
+      if printf '%s%s' "$launch_json" "$err" | grep -qi 'still running'; then
+        local running
+        running="$(node "$comp" status --json --cwd "$repo" 2>/dev/null | jq -r '.running[0].id // empty')"
+        if [ -n "$running" ]; then
+          node "$comp" status "$running" --wait --timeout-ms "$timeout_ms" --json --cwd "$repo" >/dev/null 2>&1
+          launch_json="$(ub_launch "$([ $resume = 1 ] && echo resume || echo fresh)" "$pf")"
+        fi
+        if ! printf '%s' "$launch_json" | jq -e .jobId >/dev/null 2>&1; then
+          ub_turn_fail RETRYABLE "a Codex task is still running${running:+ (job $running)}; no state was changed"
+          return 1
+        fi
+      else
+        ub_turn_fail RETRYABLE "launch failed: $(printf '%s' "$err" | head -3 | tr '\n' ' ')"
+        return 1
+      fi
+    fi
+    jobid="$(printf '%s' "$launch_json" | jq -r .jobId)"
 
-  if ! printf '%s' "$res_json" | jq -e '.storedJob.result' >/dev/null 2>&1; then
-    ub_turn_fail RETRYABLE "no result payload for job $jobid (timeout ${timeout_ms}ms?)" "$jobid"
-    return 1
-  fi
+    res_json="$(ub_collect "$jobid")"
+    attempts=$((attempts + 1))
 
-  local status raw thread csid
-  status="$(printf '%s' "$res_json" | jq -r '.storedJob.result.status // 1')"
-  raw="$(printf '%s' "$res_json" | jq -r '.storedJob.result.rawOutput // ""')"
-  thread="$(printf '%s' "$res_json" | jq -r '.storedJob.result.threadId // .job.threadId // ""')"
-  csid="$(printf '%s' "$res_json" | jq -r '.job.sessionId // .storedJob.sessionId // ""')"
+    if ! printf '%s' "$res_json" | jq -e '.storedJob.result' >/dev/null 2>&1; then
+      ub_turn_fail RETRYABLE "no result payload for job $jobid (timeout ${timeout_ms}ms?)" "$jobid"
+      return 1
+    fi
 
-  # E12: a threadId on a failed turn is not a usable thread — discard it.
-  if [ "$status" != "0" ] || [ -z "$(printf '%s' "$raw" | tr -d '[:space:]')" ]; then
-    local summary; summary="$(printf '%s' "$res_json" | jq -r '.job.summary // "no output"' | head -c 300)"
-    ub_turn_fail RETRYABLE "codex returned status=$status with empty output: $summary" "$jobid"
-    return 1
-  fi
+    status="$(printf '%s' "$res_json" | jq -r '.storedJob.result.status // 1')"
+    raw="$(printf '%s' "$res_json" | jq -r '.storedJob.result.rawOutput // ""')"
+    thread="$(printf '%s' "$res_json" | jq -r '.storedJob.result.threadId // .job.threadId // ""')"
+    csid="$(printf '%s' "$res_json" | jq -r '.job.sessionId // .storedJob.sessionId // ""')"
 
-  # Continuity: thread and Codex session must match once known.
-  if [ -n "$prev_thread" ] && [ -n "$thread" ] && [ "$prev_thread" != "$thread" ]; then
-    ub_turn_fail CONTINUITY "threadId changed: expected $prev_thread got $thread" "$jobid"
-    return 1
-  fi
-  if [ -n "$prev_cs" ] && [ -n "$csid" ] && [ "$prev_cs" != "$csid" ]; then
-    ub_turn_fail CONTINUITY "codex sessionId changed: expected $prev_cs got $csid" "$jobid"
-    return 1
-  fi
+    # E12: a threadId on a failed turn is not a usable thread — discard it.
+    if [ "$status" != "0" ] || [ -z "$(printf '%s' "$raw" | tr -d '[:space:]')" ]; then
+      local summary; summary="$(printf '%s' "$res_json" | jq -r '.job.summary // "no output"' | head -c 300)"
+
+      # Account refused this model (recognised shape: 400 + invalid_request_error
+      # + the model named). Explicit choices stop the run; preference-list
+      # choices fall forward once.
+      if [ -n "$model" ] && ub_is_model_refusal "$res_json" "$model"; then
+        if [ "$model_origin" = "explicit" ]; then
+          ub_turn_fail FATAL "model '$model' was refused by this account: $summary — alternatives: $UB_MODEL_PREFERENCE" "$jobid"
+          return 1
+        fi
+        local next
+        next="$(ub_next_model "$model")"
+        if [ -z "$next" ] || [ "$probe_used" = 1 ]; then
+          ub_turn_fail FATAL "every candidate model was refused (tried up to '$model'): $summary" "$jobid"
+          return 1
+        fi
+        if ! cmd_session_write "$sd" "$(jq -n -c --arg f "$model" --arg t "$next" --arg r "$summary" \
+          '{model:$t, modelDowngraded:{from:$f, to:$t, reason:$r}}')" >/dev/null; then
+          ub_turn_fail FATAL "model downgrade to '$next' could not be recorded in session.json; aborting rather than running on an unrecorded model" "$jobid"
+          return 1
+        fi
+        model_downgrade="$(jq -n -c --arg f "$model" --arg t "$next" '{from:$f, to:$t}')"
+        model="$next"
+        probe_used=1
+        continue
+      fi
+
+      # A 400 we do not recognise, on a preference-list model: one bounded probe
+      # of the next candidate (plan E5), recorded, never a loop.
+      if [ -n "$model" ] && [ "$model_origin" != "explicit" ] && [ "$probe_used" = 0 ] &&
+        ub_is_unknown_400 "$res_json"; then
+        local next2
+        next2="$(ub_next_model "$model")"
+        if [ -n "$next2" ]; then
+          if ! cmd_session_write "$sd" "$(jq -n -c --arg f "$model" --arg t "$next2" --arg r "$summary" \
+            '{model:$t, modelSelectionUnknown:{from:$f, to:$t, rawError:$r}}')" >/dev/null; then
+            ub_turn_fail FATAL "model probe to '$next2' could not be recorded in session.json" "$jobid"
+            return 1
+          fi
+          model_downgrade="$(jq -n -c --arg f "$model" --arg t "$next2" '{from:$f, to:$t, unknownShape:true}')"
+          model="$next2"
+          probe_used=1
+          continue
+        fi
+      fi
+
+      ub_turn_fail RETRYABLE "codex returned status=$status with empty output: $summary" "$jobid"
+      return 1
+    fi
+
+    # Continuity: thread and Codex session must match once known (INV-CONT-1).
+    if [ -n "$prev_thread" ] && [ -n "$thread" ] && [ "$prev_thread" != "$thread" ]; then
+      ub_turn_fail CONTINUITY "threadId changed: expected $prev_thread got $thread" "$jobid"
+      return 1
+    fi
+    if [ -n "$prev_cs" ] && [ -n "$csid" ] && [ "$prev_cs" != "$csid" ]; then
+      ub_turn_fail CONTINUITY "codex sessionId changed: expected $prev_cs got $csid" "$jobid"
+      return 1
+    fi
+    break
+  done
 
   local outfile="$sd/$label.output.md"
   printf '%s\n' "$raw" > "$outfile"
 
+  # The validation artifact is a HARD GATE (plan A9): after every validation
+  # attempt the artifact must exist and parse as JSON with a boolean .ok, or the
+  # turn fails — a broken validator can never read as success (defect S2).
+  ub_validation_usable() {
+    jq -e '.ok | type == "boolean"' "$1" >/dev/null 2>&1
+  }
+  ub_validation_gate() {
+    # $1 = validation file, $2 = stderr file
+    ub_validation_usable "$1" && return 0
+    ub_turn_fail FORMAT "validation artifact missing or unreadable — validator error: $(head -c 300 "$2" 2>/dev/null)" "$jobid" "$attempts" "$format_repair" '{"validationUnreadable":true}'
+    return 1
+  }
+
   # FORMAT policy: one bounded repair turn on the same thread (INV-FORMAT-1).
   if [ -n "$contract" ]; then
-    if ! cmd_validate_output --contract "$contract" --input "$outfile" > "$sd/$label.validation.json" 2>/dev/null; then
+    local vfile="$sd/$label.validation.json" verr="$sd/$label.validation.err"
+    if ! cmd_validate_output --contract "$contract" --input "$outfile" > "$vfile" 2>"$verr"; then
+      ub_validation_gate "$vfile" "$verr" || return 1
       if [ -n "$repair_tpl" ] && [ -r "$repair_tpl" ]; then
         local pre="$sd/$label.pre-repair.md"
         mv -f "$outfile" "$pre"
         local repair_prompt="$sd/$label.repair-prompt.md"
         ub_render_repair "$repair_tpl" "$contract" "$pre" > "$repair_prompt"
-        local rl rj rjob rres rraw
+        local rj rjob rres rraw rstatus rthread rcs
         rj="$(ub_launch resume "$repair_prompt")"
         if printf '%s' "$rj" | jq -e .jobId >/dev/null 2>&1; then
           rjob="$(printf '%s' "$rj" | jq -r .jobId)"
           rres="$(ub_collect "$rjob")"
           attempts=$((attempts + 1))
           format_repair=true
+          # The repair turn gets the same guards as the main turn (plan A10 /
+          # defect S3): payload present, output non-empty, continuity intact.
+          if ! printf '%s' "$rres" | jq -e '.storedJob.result' >/dev/null 2>&1; then
+            ub_turn_fail RETRYABLE "repair turn produced no result payload (timeout ${timeout_ms}ms?)" "$rjob" "$attempts" true
+            return 1
+          fi
+          rstatus="$(printf '%s' "$rres" | jq -r '.storedJob.result.status // 1')"
           rraw="$(printf '%s' "$rres" | jq -r '.storedJob.result.rawOutput // ""')"
+          rthread="$(printf '%s' "$rres" | jq -r '.storedJob.result.threadId // .job.threadId // ""')"
+          rcs="$(printf '%s' "$rres" | jq -r '.job.sessionId // .storedJob.sessionId // ""')"
+          if [ "$rstatus" != "0" ] || [ -z "$(printf '%s' "$rraw" | tr -d '[:space:]')" ]; then
+            ub_turn_fail RETRYABLE "repair turn failed with status=$rstatus and empty output" "$rjob" "$attempts" true
+            return 1
+          fi
+          if [ -n "$thread" ] && [ -n "$rthread" ] && [ "$thread" != "$rthread" ]; then
+            ub_turn_fail CONTINUITY "repair turn landed on a different thread: expected $thread got $rthread" "$rjob" "$attempts" true
+            return 1
+          fi
+          if [ -n "$csid" ] && [ -n "$rcs" ] && [ "$csid" != "$rcs" ]; then
+            ub_turn_fail CONTINUITY "repair turn ran in a different codex session: expected $csid got $rcs" "$rjob" "$attempts" true
+            return 1
+          fi
           printf '%s\n' "$rraw" > "$outfile"
-          if ! cmd_validate_output --contract "$contract" --input "$outfile" --baseline "$pre" > "$sd/$label.validation.json" 2>/dev/null; then
-            ub_turn_fail FORMAT "output still invalid after one repair turn: $(jq -r '.errors | join("; ")' "$sd/$label.validation.json" 2>/dev/null)" "$jobid" "$attempts" true
+          if ! cmd_validate_output --contract "$contract" --input "$outfile" --baseline "$pre" > "$vfile" 2>"$verr"; then
+            ub_validation_gate "$vfile" "$verr" || return 1
+            ub_turn_fail FORMAT "output still invalid after one repair turn: $(jq -r '.errors | join("; ")' "$vfile" 2>/dev/null)" "$jobid" "$attempts" true
             return 1
           fi
         else
@@ -539,24 +810,50 @@ cmd_codex_turn() {
           return 1
         fi
       else
-        ub_turn_fail FORMAT "output failed validation: $(jq -r '.errors | join("; ")' "$sd/$label.validation.json" 2>/dev/null)" "$jobid" "$attempts"
+        ub_turn_fail FORMAT "output failed validation: $(jq -r '.errors | join("; ")' "$vfile" 2>/dev/null)" "$jobid" "$attempts"
         return 1
       fi
+    else
+      ub_validation_gate "$vfile" "$verr" || return 1
     fi
   fi
 
+  # Record the validated turn mechanically (plan A3): the resume predicate for
+  # the NEXT turn reads these fields, so they must be written by the code that
+  # validated the turn, not left to the caller's discipline. Best-effort: a
+  # recording failure surfaces in the result rather than failing a valid turn.
+  local recorded=true
+  cmd_session_write "$sd" "$(jq -n -c --arg l "$label" --arg t "$thread" --arg cs "$csid" \
+    '{lastTurnLabel:$l, threadId:$t, codexSessionId:$cs}')" >/dev/null 2>&1 || recorded=false
+
   jq -n --arg jid "$jobid" --arg t "$thread" --arg cs "$csid" --arg of "$outfile" \
+    --arg m "${model:-}" --arg rr "${resume_refused:-}" \
     --argjson at "$attempts" --argjson fr "$format_repair" \
+    --argjson md "$model_downgrade" --argjson rec "$recorded" \
     '{ok:true, failureClass:null, jobId:$jid, threadId:$t, codexSessionId:$cs,
-      outputFile:$of, attempts:$at, formatRepair:$fr, message:null}'
+      outputFile:$of, attempts:$at, formatRepair:$fr,
+      model:(if $m=="" then null else $m end),
+      modelDowngraded:$md,
+      resumeRefused:(if $rr=="" then null else $rr end),
+      sessionRecorded:$rec, message:null}'
   return 0
 }
 
 ub_turn_fail() {
-  local class="$1" msg="$2" jobid="${3:-}" attempts="${4:-1}" repaired="${5:-false}"
-  jq -n --arg c "$class" --arg m "$msg" --arg j "$jobid" --argjson a "$attempts" --argjson r "$repaired" \
+  local class="$1" msg="$2" jobid="${3:-}" attempts="${4:-1}" repaired="${5:-false}" extra="${6:-}"
+  [ -n "$extra" ] || extra='{}'
+  # $model / $model_downgrade / $resume_refused come from the calling turn's
+  # scope (bash dynamic scoping); default them so direct calls stay valid.
+  jq -n --arg c "$class" --arg m "$msg" --arg j "$jobid" \
+    --arg mo "${model:-}" --arg rr "${resume_refused:-}" \
+    --argjson a "$attempts" --argjson r "$repaired" \
+    --argjson md "${model_downgrade:-null}" --argjson x "$extra" \
     '{ok:false, failureClass:$c, jobId:(if $j=="" then null else $j end), threadId:null,
-      codexSessionId:null, outputFile:null, attempts:$a, formatRepair:$r, message:$m}'
+      codexSessionId:null, outputFile:null, attempts:$a, formatRepair:$r,
+      model:(if $mo=="" then null else $mo end),
+      modelDowngraded:$md,
+      resumeRefused:(if $rr=="" then null else $rr end),
+      message:$m} + $x'
 }
 
 # Render the fixed repair template with exactly three slots (INV-FORMAT-1).
@@ -630,7 +927,6 @@ cmd_gate_arm() {
   ub_check_state_dir "$d" || return 1
   local h; h="$(ub_repo_hash)"
   local lock="$d/gate-$h.lock" conf="$d/gate-$h.confirmed"
-  [ -e "$conf" ] && rm -f "$conf"
   local code; code="$(uuidgen)"
   local payload
   payload="$(jq -n --arg r "$run_id" --arg root "$(ub_repo_root)" --arg now "$(ub_now)" \
@@ -641,6 +937,10 @@ cmd_gate_arm() {
     echo "Resolve or clear it first: rm $lock $conf" >&2
     return 1
   fi
+  # Remove any stale confirmation only AFTER the lock write succeeded (defect
+  # S1): deleting it first meant a failed re-arm destroyed the previous run's
+  # confirmation while its lock stayed live — an instant lockout.
+  [ -e "$conf" ] && rm -f "$conf"
   ub_gate_log arm "$run_id" "lock created"
   jq -n --arg l "$lock" --arg c "$code" --arg r "$run_id" '{lock:$l, unlockCode:$c, runId:$r}'
 }
@@ -719,14 +1019,22 @@ ub_is_completed() {
 }
 
 cmd_cleanup_completed() {
-  local n=0 dir
+  local n=0 failed=0 dir
   while IFS= read -r dir; do
     [ -z "$dir" ] && continue
     if ub_is_completed "$dir"; then
-      rm -r "$dir" 2>/dev/null && n=$((n + 1))
+      if rm -r "$dir" 2>/dev/null; then
+        n=$((n + 1))
+      else
+        # Never report success over a failed delete (defect S9).
+        echo "cleanup-completed: could not remove $dir" >&2
+        failed=$((failed + 1))
+      fi
     fi
   done < <(ub_session_dirs)
   printf 'Cleaned %d completed session(s)\n' "$n"
+  [ "$failed" -gt 0 ] && { printf '%d session(s) could not be removed (see stderr)\n' "$failed"; return 1; }
+  return 0
 }
 
 cmd_cleanup_list() {
@@ -785,6 +1093,7 @@ case "$SUB" in
   version) printf '%s\n' "$UB_VERSION" ;;
   doctor) cmd_doctor "$@" ;;
   resolve-companion) ub_resolve_companion ;;
+  resolve-model) cmd_resolve_model "$@" ;;
   repo-hash) ub_repo_hash ;;
   state-dir) ub_state_dir ;;
   session-new) cmd_session_new "$@" ;;

@@ -90,6 +90,40 @@ own="$(jq -r .claudeSessionId "$SD/session.json")"
 out="$(CLAUDE_SESSION_ID="$own" bash "$UTILS" session-read "$SD")"
 assert_json "$out" '.foreign' 'false'
 
+# --- single-writer contract inside session-write (plan A7, four rows) --------
+t "a foreign session's write is refused"
+SDA="$(CLAUDE_SESSION_ID=alice bash "$UTILS" session-new)"
+before="$(cat "$SDA/session.json")"
+out="$(CLAUDE_SESSION_ID=bob bash "$UTILS" session-write "$SDA" '{"round":9}' 2>&1)"; rc=$?
+assert_rc "$rc" 1
+t "the refusal names the owning session"
+assert_contains "$out" "alice"
+t "a refused write leaves the file byte-identical"
+assert_eq "$(cat "$SDA/session.json")" "$before"
+
+t "concrete owner + missing env is refused — absent never means matches"
+out="$(env -u CLAUDE_SESSION_ID bash "$UTILS" session-write "$SDA" '{"round":9}' 2>&1)"; rc=$?
+assert_rc "$rc" 1
+t "the missing-env refusal names the deterministic recovery"
+assert_contains "$out" "--force-new"
+
+t "an unknown-owner session is adopted by the first concrete session"
+SDU="$(env -u CLAUDE_SESSION_ID bash "$UTILS" session-new)"
+out="$(CLAUDE_SESSION_ID=carol bash "$UTILS" session-write "$SDU" '{"round":1}' 2>&1)"; rc=$?
+assert_rc "$rc" 0
+t "adoption claims the session"
+assert_json "$(cat "$SDU/session.json")" '.claudeSessionId' 'carol'
+t "adoption is timestamped"
+[ -n "$(jq -r '.claudeSessionIdAdoptedAt // ""' "$SDU/session.json")" ] && _ok || _no "claudeSessionIdAdoptedAt not recorded"
+t "after adoption, a different session is refused"
+out="$(CLAUDE_SESSION_ID=dave bash "$UTILS" session-write "$SDU" '{"round":2}' 2>&1)"; rc=$?
+assert_rc "$rc" 1
+
+t "both-unknown writes are allowed (single-writer is vacuous)"
+SDN="$(env -u CLAUDE_SESSION_ID bash "$UTILS" session-new)"
+out="$(env -u CLAUDE_SESSION_ID bash "$UTILS" session-write "$SDN" '{"round":2}' 2>&1)"; rc=$?
+assert_rc "$rc" 0
+
 # --- cleanup -----------------------------------------------------------------
 t "cleanup-completed leaves incomplete sessions alone"
 KEEP="$(bash "$UTILS" session-new)"

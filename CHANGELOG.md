@@ -5,6 +5,55 @@ All notable changes to the ultrablitz skill are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Automatic model selection (INV-MODEL-1): resolved once per run — `--model` →
+  `ULTRABLITZ_MODEL` → `.ultrablitz.json` `model` → the newest-first preference
+  list (`gpt-6-astra`, `gpt-5.3-codex-spark`) — recorded in `session.json` and
+  reported in the summary and artifacts. A user-named model is never
+  substituted; a preference-list model auto-downgrades once on a recognised
+  account refusal, and an unrecognised 400 gets one bounded probe
+  (`modelSelectionUnknown`) instead of a retry loop. New `resolve-model`
+  subcommand.
+- Single-writer enforcement moved inside `session-write` with a four-row
+  environment contract (adopt / refuse-on-missing-env / refuse-on-mismatch /
+  vacuous), no override flag.
+- The resume predicate is mechanical and fail-closed: `codex-turn --resume` is
+  honoured only when a validated non-smoke debate turn is recorded, refusals
+  are reported as `resumeRefused`, and validated turns record
+  `lastTurnLabel`/`threadId`/`codexSessionId` themselves.
+- The validation artifact is a hard gate: missing or unparseable validation
+  output fails the turn (`validationUnreadable`) instead of reading as success,
+  and validator stderr is kept beside the JSON.
+- The repair turn now gets the same payload and continuity guards as the main
+  turn; a timed-out repair is RETRYABLE, a thread-hopping repair is CONTINUITY.
+- `install.sh` builds the hook entry once for both the printed snippet and the
+  `--register` edit, and the uninstall path checks every step instead of
+  failing silently; new `tests/test-install.sh` covers both against a sandbox
+  HOME.
+
+### Fixed
+
+- The documented gate-clearing path was unreachable: SKILL.md told the
+  assistant to run `gate-confirm` via Bash, which the armed gate denies. The
+  Write-tool carve-out is now the single documented in-session path; the
+  operator's own terminal is the human route.
+- `gate-arm` deleted an existing confirmation before attempting its lock write,
+  so a failed re-arm destroyed the previous run's confirmation and locked the
+  user out. The removal now happens only after the lock write succeeds.
+- A quote or backslash in a category name silently voided validation
+  (awk-built JSON broke and the error was discarded); the score array is now
+  built by jq and a non-JSON contract fails loudly instead of validating
+  vacuously.
+- Pre-flight order in SKILL.md created the session after the smoke turn that
+  needs it; `doctor`'s `registration: unknown` and missing-jq cases are now
+  handled explicitly; `session-read` no longer crashes on a null
+  `claudeSessionId`; `cleanup-completed` reports paths it could not delete;
+  the gate hook no longer writes its audit log into a state directory it just
+  refused to trust.
+
 ## [6.0.0] - 2026-09-14
 
 ### Added

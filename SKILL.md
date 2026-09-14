@@ -39,10 +39,10 @@ UB="${ULTRABLITZ_ROOT:-$HOME/.claude/skills/ultrablitz}/hooks/ultrablitz-utils.s
 | `doctor [--json]` | prerequisites, companion, hook registration |
 | `session-new` / `session-read <dir>` / `session-write <dir> <patch>` | run state (`references/session-schema.md`) |
 | `run-lock <runId> [--force-new]` / `run-unlock` | one active run per repo |
-| `codex-turn --session <dir> --prompt-file <f> [--resume] [--contract <f>] [--repair-template <f>] [--label L]` | one validated Codex turn |
+| `codex-turn --session <dir> --prompt-file <f> [--resume] [--contract <f>] [--repair-template <f>] [--label L] [--timeout-ms N] [--model M] [--effort E]` | one validated Codex turn |
 | `validate-output --contract <f> --input <f> [--baseline <f>]` | enforce the output contract |
-| `render-repair` | render the format-repair stub (**INV-FORMAT-1**) |
-| `gate-arm <runId>` / `gate-confirm` / `gate-status` / `gate-clear` | post-debate gate |
+| `render-repair --template <f> --contract <f> --offending <f>` | **INTERNAL — never call during a run.** `codex-turn --repair-template` owns the one repair **INV-FORMAT-1** permits. Exists for `prompt-lint`. |
+| `gate-arm <runId>` / `gate-status` / `gate-confirm` / `gate-clear` | post-debate gate; the last two are operator-only once armed (see Termination) |
 | `cleanup-completed` / `cleanup-list` | session hygiene |
 
 `codex-turn` returns one JSON object:
@@ -60,7 +60,8 @@ the ledger, scores, or the round counter.
   generic 4×25 rubric, labelled GENERIC.
 - `--reviewer codex|claude` — default `codex`. `claude` is ADVISORY (**INV-TERM-3**).
 - `--out <dir>` — where to persist artifacts.
-- `--effort`, `--model` — passed through to Codex.
+- `--model M`, `--effort E` — passed through to Codex on every turn. `--model` is
+  an explicit user choice and is never auto-changed (Pre-flight 4).
 - `--cleanup` — run `cleanup-list` and stop.
 - `--force-new` — take over a stale per-repo run lock.
 
@@ -68,18 +69,33 @@ If no plan text is given, ask what to debate. Flags override implied intent.
 
 ## Pre-flight
 
-1. `bash "$UB" doctor --json` → stop and show the failing check if `.ok` is false.
-   Doctor names the fix for every failure it reports (missing prerequisite,
-   wrong-arch codex install, unregistered hook).
+1. `bash "$UB" doctor --json`. Three outcomes, all of which you must handle:
+   - `.ok` false → stop and show the failing check; doctor names the fix.
+   - no JSON at all (exit 3) → `jq` is missing. Stop: the gate hook is
+     fail-closed without it.
+   - `.checks[] | select(.name=="registration").status == "unknown"` → say plainly
+     that gate enforcement is **unverified** (`settings.json` unreadable), then
+     continue. `unknown` is not `fail`, so `.ok` alone does not cover this.
 2. `bash "$UB" gate-status` → if a gate is already active, resolve it first.
 3. `bash "$UB" run-lock <runId>` → refuses a second concurrent run in this repo.
-4. **Smoke turn.** `doctor` can report ready while the first real turn fails on an
-   expired refresh token, so send one throwaway turn ("Reply with the single word
-   OK and nothing else.") through `codex-turn` and require `OK`. On the
-   refresh-token error, tell the user to run `codex logout && codex login`.
-5. `bash "$UB" session-new` → the session directory. Write the plan to
-   `plan-full.md` inside it and record `planPath`.
-6. Read `references/debate-protocol.md` and the Phase 1 prompts. Load the Phase 2
+4. **Resolve the model, once** (**INV-MODEL-1**). Order: `--model` flag → `ULTRABLITZ_MODEL` →
+   `.ultrablitz.json`'s `"model"` → the built-in preference list (newest first:
+   `gpt-6-astra`, then `gpt-5.3-codex-spark`, alias `spark`) → the companion's own
+   default. Pass the result as `--model` on every turn, `session-write` it, and
+   report it in the summary and the `debate-log.md` frontmatter — a score is not
+   comparable across models.
+5. `bash "$UB" session-new` → the session directory `$SD`. Write the plan to
+   `$SD/plan-full.md` and record `planPath`.
+6. **Smoke turn.** `doctor` can report ready while the first real turn fails, so
+   write `Reply with the single word OK and nothing else.` to `$SD/smoke.md` and
+   send `bash "$UB" codex-turn --session "$SD" --prompt-file "$SD/smoke.md"
+   --label smoke --model "$MODEL"` (no `--resume`, no `--contract`); require `OK`.
+   - refresh-token error → tell the user to run `codex logout && codex login`.
+   - model refusal (HTTP 400 `invalid_request_error` naming the model) → a model
+     that came from the preference list downgrades to the next candidate; re-run
+     the smoke turn with it. A model the **user** named is never changed: stop
+     and report the refusal. Costs one turn; keeps the debate off an unusable model.
+7. Read `references/debate-protocol.md` and the Phase 1 prompts. Load the Phase 2
    prompts when Phase 2 starts, not before.
 
 ## Phase 1 — framework negotiation
@@ -130,7 +146,7 @@ Every turn:
 bash "$UB" codex-turn --session "$SD" --prompt-file "$P" --resume \
   --contract "$SD/framework.json" \
   --repair-template "${ULTRABLITZ_ROOT:-$HOME/.claude/skills/ultrablitz}/references/prompts/format-repair.md" \
-  --label "p2-r$N"
+  --label "p2-r$N" --model "$MODEL"
 ```
 
 Then, in order:
@@ -140,7 +156,8 @@ Then, in order:
    to stop (authoritative through the last good round) or continue DEGRADED.
    FORMAT: show the raw output as non-authoritative and ask retry-or-abort.
 2. `ok:true` → the output is already validated against the locked framework. Read
-   the totals from `validate-output`'s JSON. Apply the cap (**INV-SCORE-1**), the
+   the totals from `$SD/<label>.validation.json` (e.g. `$SD/p2-r$N.validation.json`),
+   which `codex-turn` wrote. Apply the cap (**INV-SCORE-1**), the
    consistency check (**INV-CAP-1**), and reconciliation (**INV-SCORE-2**) — block
    any delta that no ledger change justifies.
 3. `session-write` the new round, scores, ledger, `threadId`, `codexSessionId`,
@@ -177,15 +194,27 @@ Terminate only per **INV-TERM-1**. Then:
 
 1. Persist artifacts (**E2**): `debate-log.md` and `refined-plan.md` into `--out`,
    else `in-flight/innovations/<slug>/` when `~/workspace/dev/in-flight` exists,
-   else the session dir. Frontmatter: `reviewer`, `degraded`, `authoritative`.
-2. `session-write '{"completed":true}'` and print the artifact paths.
-3. `bash "$UB" gate-arm "$runId"` — **as the last Bash call**, because the hook
-   then blocks Edit/Write/NotebookEdit/Bash until the gate clears.
+   else the session dir. Frontmatter: `reviewer`, `model`, `degraded`,
+   `authoritative`.
+2. `session-write '{"completed":true}'`, print the artifact paths, `run-unlock`.
+3. `bash "$UB" gate-arm "$runId"` — **the last Bash call of the run**: the hook
+   then denies every Bash/Edit/Write/NotebookEdit call until the gate clears.
+   From its JSON keep all three fields — `runId`, `unlockCode`, and `lock` (the
+   lock path). You cannot re-read them afterwards.
 4. Ask via AskUserQuestion: **Execute** / **Modify** / **Discard**.
-   - Execute → `bash "$UB" gate-confirm` (the hook permits exactly this one
-     confirmation), then implement.
-   - Modify → the gate stays; discuss, regenerate the summary, re-ask.
-   - Discard → `bash "$UB" gate-clear`. No implementation authority carries over.
+   - **Execute** → with the **Write tool**, write exactly
+     `{"runId":"<runId>","unlockCode":"<unlockCode>"}` to the `lock` path with its
+     `.lock` suffix replaced by `.confirmed`. That pre-validated single Write is
+     the hook's only carve-out and the only way to clear the gate from inside the
+     session: **no Bash call can clear it** — `gate-confirm` included, because the
+     hook denies the Bash call before it runs. Then implement.
+     If the Write is refused, **STOP** and tell the user; do not improvise another
+     route.
+   - **Modify** → the gate stays; discuss, regenerate the summary, re-ask.
+   - **Discard** → the run is closed with no implementation authority. Hand the
+     user the operator command to run **in their own terminal** (expand `$UB`):
+     `bash <skill>/hooks/ultrablitz-utils.sh gate-clear`. It must be typed by
+     them; run as a tool call it is denied.
 
 The gate fires after any termination that produced a usable refined plan. It does
 not fire if the user cancelled the run or Codex failed fatally before Round 1.
@@ -196,6 +225,7 @@ ULTRABLITZ — COMPLETE{ (DEGRADED: reason) | (ADVISORY)}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Final Score: {score}/{max}{ — non-authoritative}
 Rounds: {N} framework + {M} evaluation   Codex Calls: {attemptCount}
+Model: {resolved model}
 Trajectory: {r1} -> ... -> {rM}          Termination: {reason}
 Agreed Framework: {categories, max}
 Final Refined Plan: {text}
@@ -224,11 +254,12 @@ becomes a Plan Digest with the full text on disk and findings referenced by ID.
 - **NEVER** pass `--write` to Codex, and never let it modify the repo.
 - **NEVER** begin implementation before the gate clears.
 - **NEVER** hand-roll a Codex invocation, a session write, or a gate file — use the
-  subcommands (**INV-A9**).
+  subcommands (**INV-A9**). The one exception is the Execute confirmation Write
+  above, which no subcommand can reach from inside the session.
 - **ALWAYS** show Codex's raw output transparently.
 - **ALWAYS** keep the refined plan coherent, not a patchwork of accepted fixes.
 - The framework is locked during Phase 2 except by recalibration (**INV-CAP-2**).
 - Authoritative scores are evidence-backed (**INV-SCORE-2**); a DEGRADED or
   ADVISORY run never claims one.
 - Release the run lock (`run-unlock`) and mark the session completed on every exit
-  path, including aborts.
+  path, including aborts — always before `gate-arm`, after which no Bash runs.

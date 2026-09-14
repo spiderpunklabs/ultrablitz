@@ -49,20 +49,18 @@ if ! command -v codex >/dev/null 2>&1; then
   exit 3
 fi
 
-SNIPPET="$(
-  cat <<EOF
-{
-  "hooks": {
-    "PreToolUse": [
-      {
-        "matcher": "Edit|Write|NotebookEdit|Bash",
-        "hooks": [{ "type": "command", "command": $(printf '%s' "$HOOK_CMD" | jq -Rs .) }]
-      }
-    ]
-  }
+# The hook entry is written down ONCE here and reused by both the printed
+# snippet and the --register edit below, so the two can never drift apart.
+HOOK_ENTRY="$(jq -n --arg cmd "$HOOK_CMD" \
+  '{matcher:"Edit|Write|NotebookEdit|Bash",hooks:[{type:"command",command:$cmd}]}')" || {
+  say "jq failed to build the hook entry"
+  exit 3
 }
-EOF
-)"
+# Pretty-printed, mergeable JSON a human can paste into settings.json.
+SNIPPET="$(jq -n --argjson e "$HOOK_ENTRY" '{hooks:{PreToolUse:[$e]}}')" || {
+  say "jq failed to build the settings snippet"
+  exit 3
+}
 
 hook_registered() {
   [ -r "$SETTINGS" ] || return 2
@@ -107,11 +105,10 @@ case "$MODE" in
         exit 3
       }
       TMP="$SETTINGS.ultrablitz.tmp"
-      jq --arg cmd "$HOOK_CMD" '
+      jq --argjson e "$HOOK_ENTRY" '
         .hooks //= {} |
         .hooks.PreToolUse //= [] |
-        .hooks.PreToolUse += [{matcher:"Edit|Write|NotebookEdit|Bash",
-                               hooks:[{type:"command", command:$cmd}]}]' \
+        .hooks.PreToolUse += [$e]' \
         "$SETTINGS" >"$TMP" || {
         say "jq failed; settings.json untouched (backup at $BACKUP)"
         rm -f "$TMP"
@@ -122,7 +119,12 @@ case "$MODE" in
         rm -f "$TMP"
         exit 3
       }
-      mv -f "$TMP" "$SETTINGS" && say "hook: registered (backup at $BACKUP)"
+      mv -f "$TMP" "$SETTINGS" || {
+        say "could not write $SETTINGS; it is unchanged (backup at $BACKUP)"
+        rm -f "$TMP"
+        exit 3
+      }
+      say "hook: registered (backup at $BACKUP)"
     fi
 
     say ""
@@ -131,25 +133,61 @@ case "$MODE" in
     ;;
 
   uninstall)
-    if [ -r "$SETTINGS" ] && [ -w "$SETTINGS" ]; then
+    # Every step is checked. A failure here must never print "removed" and must
+    # never exit 0 — the hook would still be live while the user believed it was
+    # gone. Failures stop before the symlink is removed, because a registered
+    # hook pointing at a missing skill dir is worse than no uninstall at all.
+    UNINSTALL_RC=0
+    TMP="$SETTINGS.ultrablitz.tmp"
+    if [ ! -e "$SETTINGS" ]; then
+      say "hook: nothing to remove — no settings.json at $SETTINGS"
+    elif [ ! -r "$SETTINGS" ] || [ ! -w "$SETTINGS" ]; then
+      say "settings.json is not readable/writable by this process: $SETTINGS"
+      say "  remove the ultrablitz-gate.sh hook entry from it by hand"
+    elif ! jq -e . "$SETTINGS" >/dev/null 2>&1; then
+      say "settings.json is not valid JSON: $SETTINGS"
+      say "  nothing was changed — fix the file, then remove the ultrablitz-gate.sh entry"
+      exit 3
+    elif ! hook_registered; then
+      say "hook: not registered in $SETTINGS — nothing to remove"
+    else
       BACKUP="$SETTINGS.bak-$(date -u +%Y%m%dT%H%M%SZ)"
-      cp "$SETTINGS" "$BACKUP"
-      TMP="$SETTINGS.ultrablitz.tmp"
+      cp "$SETTINGS" "$BACKUP" || {
+        say "could not back up settings.json to $BACKUP; settings.json untouched"
+        exit 3
+      }
       jq '
         if .hooks.PreToolUse then
           .hooks.PreToolUse |= map(
             .hooks |= map(select((.command // "") | contains("ultrablitz-gate.sh") | not))
           ) | .hooks.PreToolUse |= map(select((.hooks | length) > 0))
-        else . end' "$SETTINGS" >"$TMP" && jq -e . "$TMP" >/dev/null 2>&1 &&
-        mv -f "$TMP" "$SETTINGS" && say "hook: removed (backup at $BACKUP)"
-      rm -f "$TMP"
-    else
-      say "settings.json not writable — remove the ultrablitz-gate.sh hook entry by hand"
+        else . end' "$SETTINGS" >"$TMP" || {
+        say "jq failed to remove the hook; settings.json untouched (backup at $BACKUP)"
+        rm -f "$TMP"
+        exit 3
+      }
+      jq -e . "$TMP" >/dev/null 2>&1 || {
+        say "removal produced invalid JSON; settings.json untouched (backup at $BACKUP)"
+        rm -f "$TMP"
+        exit 3
+      }
+      mv -f "$TMP" "$SETTINGS" || {
+        say "could not write $SETTINGS; it is unchanged (backup at $BACKUP)"
+        rm -f "$TMP"
+        exit 3
+      }
+      say "hook: removed (backup at $BACKUP)"
     fi
+
     if [ -L "$SKILL_LINK" ]; then
-      rm -f "$SKILL_LINK" && say "skill: unlinked $SKILL_LINK"
+      if rm -f "$SKILL_LINK"; then
+        say "skill: unlinked $SKILL_LINK"
+      else
+        say "skill: could not remove $SKILL_LINK — remove it by hand"
+        UNINSTALL_RC=3
+      fi
     fi
     bash "$ROOT/hooks/ultrablitz-utils.sh" gate-clear >/dev/null 2>&1 || true
-    exit 0
+    exit "$UNINSTALL_RC"
     ;;
 esac

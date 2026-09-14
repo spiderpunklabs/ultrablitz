@@ -169,6 +169,20 @@ t "each log line is valid JSON with an event"
 line="$(tail -1 "$ULTRABLITZ_STATE_DIR/gate.log")"
 assert_json "$line" '.event' 'deny'
 
+# --- re-arm must not destroy a live confirmation (defect S1) -----------------
+t "gate-arm succeeds and gate-confirm clears it"
+rm -f "$LOCK" "$CONF"
+bash "$UTILS" gate-arm run-s1 >/dev/null 2>&1 && bash "$UTILS" gate-confirm >/dev/null 2>&1
+[ -f "$CONF" ] && _ok || _no "confirmation file not created"
+t "a failed re-arm exits non-zero"
+out="$(bash "$UTILS" gate-arm run-s1b 2>&1)"; rc=$?
+assert_rc "$rc" 1
+t "the previous confirmation survives the failed re-arm (no lockout)"
+[ -f "$CONF" ] && _ok || _no "confirmation was destroyed by the failed re-arm"
+t "and the confirmed gate still allows"
+out="$(call Bash '{"command":"echo hi"}')"
+assert_eq "$(decision "$out")" "allow"
+
 t "hook emits no output on allow (exit 0, silent)"
 rm -f "$LOCK" "$CONF"
 out="$(call Bash '{"command":"echo hi"}')"

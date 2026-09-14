@@ -54,12 +54,32 @@ const validBody = (scores = [24, 18, 19, 15, 18], nCrit = 1) => {
 
 const malformedBody = "I have some thoughts about the plan but no structured sections here.";
 
+// The account-refusal error shape recorded live on 2026-09-14 (codex 0.154.0).
+const refusalError = (m) =>
+  `{"type":"error","status":400,"error":{"type":"invalid_request_error","message":"The '${m}' model is not supported when using Codex with a ChatGPT account."}}`;
+// A 400 whose shape ultrablitz does NOT recognise as a model refusal.
+const weird400 = `{"type":"error","status":400,"error":{"type":"mystery_error","message":"upstream said no"}}`;
+
 // Which body/thread/session/status this turn produces.
-function turnResult(state) {
+function turnResult(state, reqModel) {
   const n = state.turns; // 1-based after increment
   switch (scenario) {
     case "empty-output":
       return { status: 1, rawOutput: "", threadId: THREAD, sessionId: SESSION };
+    case "model-refused":
+      // The newest model is refused for this account; anything else works.
+      if (reqModel === "gpt-6-astra") {
+        return { status: 1, rawOutput: "", threadId: THREAD, sessionId: SESSION, errorText: refusalError(reqModel) };
+      }
+      return { status: 0, rawOutput: validBody(), threadId: THREAD, sessionId: SESSION };
+    case "model-refused-all":
+      return { status: 1, rawOutput: "", threadId: THREAD, sessionId: SESSION, errorText: refusalError(reqModel || "default") };
+    case "model-refused-unknown-shape":
+      // First model fails with a 400 ultrablitz does not recognise; the next works.
+      if (n === 1) {
+        return { status: 1, rawOutput: "", threadId: THREAD, sessionId: SESSION, errorText: weird400 };
+      }
+      return { status: 0, rawOutput: validBody(), threadId: THREAD, sessionId: SESSION };
     case "mismatch":
       return {
         status: 0,
@@ -136,12 +156,13 @@ if (sub === "task") {
 
   state.turns += 1;
   const jobId = `task-stub-${state.turns}`;
-  const r = turnResult(state);
+  const r = turnResult(state, flag("model"));
   state.jobs[jobId] = {
     id: jobId,
     status: r.status === 0 ? "completed" : "failed",
     threadId: r.threadId,
     sessionId: r.sessionId,
+    errorText: r.errorText || null,
     result: { status: r.status, threadId: r.threadId, rawOutput: r.rawOutput, touchedFiles: [], reasoningSummary: [] },
     // `timeout` scenario: the job never finishes.
     finished: scenario !== "timeout",
@@ -187,7 +208,7 @@ if (sub === "result") {
   process.stdout.write(
     JSON.stringify(
       {
-        job: { id: jobId, status: job.status, phase: "done", threadId: job.threadId, sessionId: job.sessionId, summary: job.result.rawOutput ? "ok" : "no output" },
+        job: { id: jobId, status: job.status, phase: "done", threadId: job.threadId, sessionId: job.sessionId, summary: job.errorText || (job.result.rawOutput ? "ok" : "no output") },
         storedJob: { id: jobId, sessionId: job.sessionId, result: job.result, rendered: job.result.rawOutput },
       },
       null,
