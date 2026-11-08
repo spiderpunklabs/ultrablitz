@@ -1,0 +1,15 @@
+{
+  "categories": [
+    { "name": "Runtime contract fidelity & execution robustness", "weight": 25 },
+    { "name": "Gate & safety integrity", "weight": 20 },
+    { "name": "Verifiability & regression resistance", "weight": 20 },
+    { "name": "Protocol coherence & drift resistance", "weight": 15 },
+    { "name": "Operability & maintenance economics", "weight": 20 }
+  ],
+  "max": 96,
+  "attackSurface": [
+    "gate bypass via a path the PreToolUse hook does not see",
+    "session state mutated by a turn that later fails validation",
+    "prose in SKILL.md drifting from the subcommand that implements it"
+  ]
+}

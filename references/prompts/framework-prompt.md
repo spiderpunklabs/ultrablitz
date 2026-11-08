@@ -8,19 +8,22 @@ Assemble by interpolating:
 - `{ROUND_CONTEXT}` — R1: "Your counterpart (Claude) proposes the following
   scoring framework. Your job is to challenge it." R2+: "The framework
   proposer has responded. Re-evaluate the framework in its current state."
-- `{PLAN_SUMMARY}` — R1 only: 2-3 sentence plan/domain summary (omit on R2+,
+- `{PLAN_SUMMARY}` — R1 only: 2-3 sentence plan/domain summary (empty on R2+,
   Codex retains it via the resumed thread).
 - `{FRAMEWORK_PROPOSAL}` — R1: Claude's proposed framework. R2+: Claude's
   rebuttal text (per-objection responses + revised framework).
-- `{INCLUDE_MISSING_DIMENSIONS}` — R1 only: include the MISSING DIMENSIONS
-  output section. R2+: omit (the dimension catalog is already established).
+- `{FRAMEWORK_CONTRACT}` — the Phase 1 contract block from
+  `references/output-contract.md`, verbatim, every round. Its ATTACK SURFACE
+  and MISSING DIMENSIONS sections already say "- Unchanged." / "- None." are
+  complete on rounds 2+. The agreed attack surface is locked into
+  `framework.json` with the categories (INV-SURFACE-1).
 - `{DEBATE_PROTOCOL}` — tone blocks from `references/debate-protocol.md`.
 
 Write the assembled prompt to:
 - R1: `<session>/p1-r1-framework.md`
 - R2+: `<session>/p1-r<N>-claude-response.md`
 
-Always `.md`. Run `validate-session <runId>` immediately before the Codex call.
+Always `.md`. Send with `codex-turn` (R1 without `--resume`, R2+ with it).
 
 ```xml
 <task>
@@ -46,30 +49,7 @@ FRAMEWORK UNDER REVIEW:
 {DEBATE_PROTOCOL}
 
 <structured_output_contract>
-Return your response in EXACTLY this format:
-
-## FRAMEWORK VERDICT: ACCEPT | REJECT | COUNTER-PROPOSE
-
-## CATEGORY ASSESSMENT:
-For each category:
-- {Category}: ACCEPT | REJECT | MODIFY
-  - If REJECT/MODIFY: why, and what to replace/change it with
-
-## WEIGHT ASSESSMENT:
-- Are the weights appropriate for this domain? If not, propose alternatives
-  with justification.
-
-## THEORETICAL MAXIMUM:
-- What is the realistic maximum score for a plan in this domain, and why?
-- If you disagree with the proposed maximum, state yours with evidence.
-
-{INCLUDE_MISSING_DIMENSIONS}
-
-## PROPOSED CHANGES:
-{If REJECT or COUNTER-PROPOSE: your complete alternative or modified framework}
-
-## RATIONALE:
-{One paragraph: why this framework is or isn't appropriate for the domain}
+{FRAMEWORK_CONTRACT}
 </structured_output_contract>
 
 <grounding_rules>
@@ -88,12 +68,3 @@ theoretical maximum, and any missing dimensions.
 Do not stop at surface-level acceptance.
 </completeness_contract>
 ```
-
-Template fragment for `{INCLUDE_MISSING_DIMENSIONS}` on R1:
-
-```
-## MISSING DIMENSIONS:
-- Are there evaluation dimensions critical to this domain that the framework omits?
-```
-
-On R2+, replace `{INCLUDE_MISSING_DIMENSIONS}` with an empty string.

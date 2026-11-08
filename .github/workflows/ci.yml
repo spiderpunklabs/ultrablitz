@@ -148,3 +148,19 @@ jobs:
             git diff "origin/$base"...HEAD --name-only -z | xargs -0 git update-index --add 2>/dev/null || true
           fi
           bash scripts/check-staged.sh
+
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # jq is preinstalled on ubuntu runners; fail loudly if that ever changes.
+      - name: verify jq
+        run: jq --version
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      # `make smoke` is deliberately NOT run here: it spends real Codex API usage
+      # and needs interactive auth. Live coverage is `make release-check` at tag time.
+      - name: offline suite (stub companion)
+        run: make test

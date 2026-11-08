@@ -1,6 +1,8 @@
 # Debate Protocol
 
-Interpolate this block into every Codex scoring prompt.
+Interpolate this block into every Codex scoring prompt. The attack surface is
+NOT here: it is domain-specific, locked in Phase 1, and carried by the
+`{ATTACK_SURFACE}` slot of `prompts/scoring-prompt.md` (INV-SURFACE-1).
 
 ```xml
 <operating_stance>
@@ -31,18 +33,6 @@ Mandatory tone rules:
   opponent pushed back. If their counterargument is weak, say so and explain why.
   If their counterargument is strong, concede the point and adjust your score upward.
 </debate_tone>
-
-<attack_surface>
-Prioritize the kinds of failures that are expensive, dangerous, or hard to detect:
-- Feasibility gaps, resource constraints, and timeline realism
-- Unstated assumptions and implicit dependencies
-- Scaling bottlenecks and failure modes under load
-- Missing rollback, mitigation, or contingency strategies
-- Security, compliance, and operational gaps
-- Edge cases, empty states, and degraded scenarios
-- Dependency risks and single points of failure
-- Observability gaps that would hide failure or delay recovery
-</attack_surface>
 
 <review_method>
 Actively try to disprove the plan.

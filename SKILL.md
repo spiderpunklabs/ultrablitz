@@ -1,5 +1,6 @@
 ---
 name: ultrablitz
+version: 7.0.0
 description: >-
   Adversarial debate loop between Claude and Codex to refine plans, ideas, and
   designs to perfection. Two-phase: first Claude and Codex negotiate the evaluation
@@ -13,539 +14,309 @@ description: >-
 
 # Ultrablitz — Adversarial Debate Loop
 
-> **Requires**: [openai-codex plugin](https://github.com/openai/codex-plugin-cc) for Claude Code.
-> Install via `/install-plugin openai-codex` and run `/codex:setup` before first use.
+> **Requires** the [openai-codex plugin](https://github.com/openai/codex-plugin-cc)
+> and a one-time `bash install.sh --register`.
 
-Two-phase adversarial refinement between Claude and Codex.
+Two phases. **Phase 1** negotiates the evaluation framework (categories, weights,
+theoretical maximum) until both sides agree. **Phase 2** evaluates the plan against
+that locked framework until mechanical consensus or a hard cap.
 
-**Phase 1 — Framework Negotiation**: Claude and Codex debate the evaluation
-criteria before scoring anything. What categories matter for this domain?
-What weights? What's the theoretical maximum? They argue until both agree.
+## How this file is organised
 
-**Phase 2 — Plan Evaluation**: Using the agreed framework, Codex scores the
-plan, Claude argues back, and they loop until mechanical consensus or round cap.
-
-## Argument Parsing
-
-Parse the user's input for:
-- **Plan text**: everything after the command trigger (or flags)
-- `--max-rounds N`: soft target for Phase 2 rounds (default: 5). Debate auto-extends past this if findings remain unresolved, up to hard cap of 10.
-- `--framework-rounds N`: soft target for Phase 1 rounds (default: 3). Auto-extends up to hard cap of 5.
-- `--skip-framework`: skip Phase 1, use default rubric (generic 4x25 or custom from `.ultrablitz.json`)
-- `--cleanup`: list and interactively delete incomplete sessions, then exit
-- `--effort <none|minimal|low|medium|high|xhigh>`: passed to Codex if set
-- `--model <model>`: passed to Codex if set
-
-If no plan text is provided, ask the user what they want to debate/refine.
-All triggers normalize to the same invocation with the same defaults.
-Flags always override implied intent.
-
-## Pre-Flight
-
-Four steps. Execute in order before Phase 1.
-
-### 1. Resolve Codex Companion
+Every mechanical rule has exactly one normative home in
+`references/protocol-invariants.md`, cited here as `INV-*`. Where this file cites
+an invariant, the invariant text wins. Every mechanical *step* is a subcommand of
+`hooks/ultrablitz-utils.sh` (**INV-A9**). Your job is the judgement: framework design, rebuttals,
+ledger decisions, reconciliation reasoning, and what to show the user.
 
 ```bash
-CODEX_COMPANION=$(bash "$(dirname "$0")/hooks/ultrablitz-utils.sh" resolve-companion)
+UB="${ULTRABLITZ_ROOT:-$HOME/.claude/skills/ultrablitz}/hooks/ultrablitz-utils.sh"
 ```
 
-The helper checks the openai-codex plugin cache (highest version) then the
-marketplace, verifying existence and executability. If neither is found it
-fails with a diagnostic listing the paths checked. Only those two locations
-are supported.
+| Subcommand | Use |
+|---|---|
+| `doctor [--json]` | prerequisites, companion, hook registration |
+| `session-new` / `session-read <dir>` / `session-write <dir> <patch>` | run state (`references/session-schema.md`) |
+| `run-lock <runId> [--force-new]` / `run-unlock` | one active run per repo |
+| `codex-turn --session <dir> --prompt-file <f> [--resume] [--contract <f>] [--repair-template <f>] [--label L] [--round N] [--last-id N] [--confirm-only] [--timeout-ms N] [--model M] [--effort E]` | one validated Codex turn |
+| `validate-output --contract <f> --input <f> [--baseline <f>] [--round N] [--last-id N] [--confirm-only]` | enforce the output contract (**INV-ID-1**, **INV-SWEEP-1**, **INV-ADMIT-1**) |
+| `render-contract --contract <f> --round N` / `render-contract --contract <f> --part surface` | the `{OUTPUT_CONTRACT}` text for a round / the `{ATTACK_SURFACE}` list (**INV-SURFACE-1**) |
+| `render-repair --template <f> --contract <f> --offending <f>` | **INTERNAL — never call during a run.** `codex-turn --repair-template` owns the one repair **INV-FORMAT-1** permits. Exists for `prompt-lint`. |
+| `gate-arm <runId>` / `gate-status` / `gate-confirm` / `gate-clear` | post-debate gate; the last two are operator-only once armed (see Termination) |
+| `cleanup-completed` / `cleanup-list` / `trash-session <dir>` | session hygiene — sessions are moved to `~/.Trash`, never deleted |
 
-### 2. Verify Codex Is Ready (and handle `--cleanup`)
+`codex-turn` returns one JSON object:
+`{ok, failureClass, jobId, threadId, codexSessionId, outputFile, attempts, formatRepair, message}`.
+Its validation record, `$SD/<label>.validation.json`, carries
+`{ok, errors, warnings, categories, total, critiques[{id,severity,category}],
+lastId, newIds, admissibility{admitted[], noted[{id,reason}]}, sweep}`.
+Failure classes and their state effects are **INV-FAIL-1**; none of them mutate
+the ledger, scores, or the round counter.
 
-```bash
-node "$CODEX_COMPANION" setup --json
-```
+## Argument parsing
 
-If not ready, direct the user to `/codex:setup` and stop.
+- **Plan text**: everything after the trigger, or the file named by `--plan <path>`.
+- `--max-rounds N` — Phase 2 soft target (default 5). Soft: the debate continues
+  past it while findings remain, to the hard cap of 10.
+- `--framework-rounds N` — Phase 1 soft target (default 3), hard cap 5.
+- `--skip-framework` — use `.ultrablitz.json`'s `default_framework`
+  (**INV-CONFIG-1**), else the generic 4×25 rubric, labelled GENERIC.
+- `--reviewer codex|claude` — default `codex`. `claude` is ADVISORY (**INV-TERM-3**).
+- `--out <dir>` — where to persist artifacts.
+- `--model M`, `--effort E` — passed through to Codex on every turn. `--model` is
+  an explicit user choice and is never auto-changed (Pre-flight 4).
+- `--cleanup` — run `cleanup-list` and stop. It prints one exact `trash-session`
+  command per stale session; nothing is removed without the user running it.
+- `--force-new` — take over a stale per-repo run lock.
 
-If `--cleanup` is set: run
-`bash "$(dirname "$0")/hooks/ultrablitz-utils.sh" cleanup-interactive`
-to list incomplete `/tmp/ultrablitz-*/` sessions; prompt per session
-(`y/n/all`); then exit without starting a new debate.
+If no plan text is given, ask what to debate. Flags override implied intent.
 
-### 3. Create Session Directory
+## Pre-flight
 
-```bash
-session_dir=$(bash "$(dirname "$0")/hooks/ultrablitz-utils.sh" create-session)
-runId=$(basename "$session_dir" | sed 's/^ultrablitz-//')
-```
+1. `bash "$UB" doctor --json`. Three outcomes, all of which you must handle:
+   - `.ok` false → stop and show the failing check; doctor names the fix.
+   - no JSON at all (exit 3) → `jq` is missing. Stop: the gate hook is
+     fail-closed without it.
+   - `.checks[] | select(.name=="registration").status == "unknown"` → say plainly
+     that gate enforcement is **unverified** (`settings.json` unreadable), then
+     continue. `unknown` is not `fail`, so `.ok` alone does not cover this.
+2. `bash "$UB" gate-status` → if a gate is already active, resolve it first.
+3. `bash "$UB" run-lock <runId>` → refuses a second concurrent run in this repo.
+4. **Resolve the model, once** (**INV-MODEL-1**). Order: `--model` flag → `ULTRABLITZ_MODEL` →
+   `.ultrablitz.json`'s `"model"` → the built-in preference list (newest first:
+   `gpt-6-astra`, then `gpt-5.3-codex-spark`, alias `spark`) → the companion's own
+   default. Pass the result as `--model` on every turn, `session-write` it, and
+   report it in the summary and the `debate-log.md` frontmatter — a score is not
+   comparable across models.
+5. `bash "$UB" session-new` → the session directory `$SD`. Write the plan to
+   `$SD/plan-full.md` and record `planPath`.
+6. **Smoke turn.** `doctor` can report ready while the first real turn fails, so
+   write `Reply with the single word OK and nothing else.` to `$SD/smoke.md` and
+   send `bash "$UB" codex-turn --session "$SD" --prompt-file "$SD/smoke.md"
+   --label smoke --model "$MODEL"` (no `--resume`, no `--contract`); require `OK`.
+   - refresh-token error → tell the user to run `codex logout && codex login`.
+   - model refusal (HTTP 400 `invalid_request_error` naming the model) → a model
+     that came from the preference list downgrades to the next candidate; re-run
+     the smoke turn with it. A model the **user** named is never changed: stop
+     and report the refusal. Costs one turn; keeps the debate off an unusable model.
+7. Read `references/debate-protocol.md` and `references/prompts/framework-prompt.md`.
+   Load `references/prompts/scoring-prompt.md` when Phase 2 starts, not before.
 
-The helper performs `mkdir -m 700 /tmp/ultrablitz-<runId>/` and prints the
-full path. `runId` is the canonical identifier — every artifact filename,
-every helper subcommand session argument, and the gate lock + confirmation
-JSON `runId` fields all use it. Do not invent alternate identifiers.
+## Phase 1 — framework negotiation
 
-Artifacts follow this naming schema. Content artifacts MUST use `.md`; any
-other extension is a protocol violation.
-
-```
-/tmp/ultrablitz-<runId>/
-  session.json                          # session state — JSON
-  completed                             # extensionless completion marker
-  cleanup.error                         # error log (only on cleanup failure)
-  plan-full.md                          # full plan when digested (Stage 1 overflow)
-  p1-r1-framework.md                    # Phase 1 round 1 prompt
-  p1-r<N>-claude-response.md            # Phase 1 rounds 2+ rebuttals
-  p2-r1-scoring.md                      # Phase 2 round 1 prompt
-  p2-r<N>-rebuttal.md                   # Phase 2 rounds 2+ rebuttals (N >= 2)
-```
-
-Store in `session.json`: runId (UUID), createdAt (ISO-8601), lastActiveAt
-(updated each round).
-
-### 4. Session Hygiene Scan
-
-```bash
-bash "$(dirname "$0")/hooks/ultrablitz-utils.sh" legacy-scan
-bash "$(dirname "$0")/hooks/ultrablitz-utils.sh" cleanup-completed
-```
-
-`legacy-scan` classifies each pre-existing `/tmp/ultrablitz-*/` as
-`conforming`, `completed`, `nonconforming-older-than-4h`, or
-`nonconforming-recent` (output is for the operator; the helper never
-auto-acts on non-conforming directories). `cleanup-completed` then trashes
-each session with a `completed` marker via `trash-session`, which moves it
-to `~/.Trash/ultrablitz-<runId>-<ts>-<pid>/`. Failures are surfaced.
-Incomplete sessions are NEVER auto-deleted regardless of age.
-
-Reference files are read on demand when assembling prompts; no separate
-load step.
-
----
-
-## PHASE 1: Framework Negotiation
-
-Skip if `--skip-framework` is set. When skipped:
-- If `.ultrablitz.json` has a `default_framework`, validate it (3-6 categories, weights
-  sum to 100, max 50-100) and use it. Invalid config: warn, fall back to generic 4x25.
-- Otherwise use generic 4x25 rubric (Feasibility/Completeness/Correctness/Elegance),
-  labeled "GENERIC — Framework negotiation recommended for domain-specific evaluation."
-
-### Step 1: Claude Proposes a Framework
-
-Based on the plan's domain and content, Claude proposes:
-- **3-6 scoring categories** with weights summing to 100
-- **Definition** for each category (one sentence)
-- **Theoretical maximum**: can this domain reach 100? If not, what's the max and why?
-- **Domain-specific attack surface**: what failure modes matter most?
-
-Present to user, then send to Codex.
-
-### Step 2: Codex Critiques the Framework
-
-Read `references/prompts/framework-prompt.md`. Assemble with:
-- `{ROUND_CONTEXT}` — R1 framing (see template)
-- `{PLAN_SUMMARY}` — 2-3 sentence plan summary
-- `{FRAMEWORK_PROPOSAL}` — Claude's proposed framework
-- `{INCLUDE_MISSING_DIMENSIONS}` — the R1 MISSING DIMENSIONS block
-- `{DEBATE_PROTOCOL}` — tone blocks
-
-Write to session temp dir. Invoke: `node "$CODEX_COMPANION" task --prompt-file ...`
-
-On rounds 2+, reuse the same template with the R2+ values for
-`{ROUND_CONTEXT}` and `{INCLUDE_MISSING_DIMENSIONS}` (and Claude's rebuttal
-text as `{FRAMEWORK_PROPOSAL}`), and submit via `--resume-last`.
-
-### Step 3: Framework Debate Loop
-
-If ACCEPT: lock framework. Move to Phase 2.
-
-If REJECT or COUNTER-PROPOSE:
-1. For each objection, Claude responds:
-   - **CONCEDE**: accept Codex's position
-   - **HOLD**: maintain original with evidence
-   - **COMPROMISE**: propose middle ground
-2. Claude MUST concede where Codex is right.
-3. Claude MUST hold where the original is genuinely better.
-4. Send via `--resume-last`.
-5. Repeat until ACCEPT or cap.
-
-### Step 4: Framework Resolution (if cap reached)
-
-If cap reached without full ACCEPT:
-- For each field: use Codex's last position if Claude conceded, Claude's if held.
-- Unresolved fields: marked explicitly with both positions recorded.
-- Theoretical max: use LOWER of two positions (conservative).
-- User MUST explicitly resolve unresolved fields before Phase 2 starts.
-  Options: accept reviewer positions, accept proposer positions, or set custom values.
-  If user does not choose, session pauses.
-
-### Step 5: Lock the Framework
-
-Framework is LOCKED into an artifact:
-`{ categories: [{name, weight, definition}], max, unresolved: [] }`
-
-Display to user:
+1. **Propose.** Read the plan's domain and propose 3–6 categories with weights
+   summing to 100, a one-sentence definition each, a theoretical maximum with a
+   reason, and the domain's attack surface: 3–8 one-line failure classes
+   specific to THIS plan, concrete enough to probe ("double charge on payment
+   retry", not "reliability") (**INV-SURFACE-1**). Show it to the user.
+2. **Critique.** Assemble `references/prompts/framework-prompt.md` for round 1
+   (`{ROUND_CONTEXT}`, `{PLAN_SUMMARY}`, `{FRAMEWORK_PROPOSAL}`,
+   `{DEBATE_PROTOCOL}`, `{FRAMEWORK_CONTRACT}` from
+   `references/output-contract.md`), write it to `$SD/p1-r1-framework.md`, and
+   send it with `codex-turn` (no `--resume`; this is the first debate turn).
+3. **Debate.** On ACCEPT, lock the framework. On REJECT or COUNTER-PROPOSE,
+   answer every objection with CONCEDE, HOLD (with evidence), or COMPROMISE, then
+   assemble the same template for round N (`{ROUND_CONTEXT}` for R2+, empty
+   `{PLAN_SUMMARY}`, your rebuttal as `{FRAMEWORK_PROPOSAL}`), write it to
+   `$SD/p1-r<N>-claude-response.md`, and send with `--resume`. Concede where
+   Codex is right; hold where the original is genuinely better. Repeat to the cap.
+4. **Cap without ACCEPT.** Per field: the side that held keeps its position; the
+   theoretical max takes the LOWER of the two. Unresolved fields go to the user,
+   who must resolve them before Phase 2 starts.
+5. **Lock.** Write the framework to `framework.json` in the session dir
+   (`{categories:[{name,weight,definition}], max, attackSurface:[3–8 strings]}`)
+   — this file is the contract passed to `codex-turn --contract` and
+   `render-contract --contract`. The attack surface is the list both sides
+   accepted under `## ATTACK SURFACE` (**INV-SURFACE-1**); it is as locked as
+   the categories. Record it in `session.json` and display it.
 
 ```
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ULTRABLITZ — Framework Agreed
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-Categories:
-  {Category 1}: {weight}/{total}  — {definition}
-  {Category 2}: {weight}/{total}  — {definition}
+  {Category}: {weight}  — {definition}
   ...
-
-Theoretical Maximum: {max}/100
-Reason: {why this max, if < 100}
-
+Theoretical Maximum: {max}/100   Reason: {why, if < 100}
+Attack Surface: {one line per locked failure class}
 Framework Rounds: {N}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ```
 
-Generate dynamic output contract from artifact using the template in
-`references/output-contract.md`.
+## Phase 2 — plan evaluation
 
----
+One template, `references/prompts/scoring-prompt.md`, serves every round; its
+header lists the slots and which are empty on R1 versus R2+.
 
-## PHASE 2: Plan Evaluation
+Two slots are rendered, never hand-typed (**INV-A9**): `{OUTPUT_CONTRACT}` is
+`render-contract --contract "$SD/framework.json" --round "$N"` and
+`{ATTACK_SURFACE}` is `render-contract --contract "$SD/framework.json" --part
+surface`. Codex names every finding `UB-n` (**INV-ID-1**); `$LAST` below is
+`session.json`'s `lastCritiqueId` — the highest id in play, 0 before round 1.
 
-### Thread Continuity
+**Round 1.** Assemble it with the R1 `{ROUND_CONTEXT}`, the full `{PLAN_TEXT}`,
+`{DEBATE_PROTOCOL}`, `{ATTACK_SURFACE}`, the round-1 `{OUTPUT_CONTRACT}` (it
+carries the `## EDGE CASE SWEEP`, **INV-SWEEP-1**) and the `{INCLUDE_DIG_DEEPER}`
+block; write to `$SD/p2-r1-scoring.md` and send with `--resume --round 1` so
+Codex keeps the framework context. Initialise the ledger from
+`validation.json`'s `critiques[]` (one entry per id, status UNRESOLVED) and set
+`lastCritiqueId` from its `lastId`. Show the sweep in the round card; every
+UNCOVERED class already has its critique by construction.
 
-- Phase 2 Round 1 uses `--resume-last` to continue the Phase 1 thread
-  (Codex retains framework context). If `--skip-framework`, Round 1 is a fresh task.
-- Capture the threadId emitted by codex-companion after Round 1 and persist
-  it in `session.json` for audit. If the thread is lost between rounds,
-  the next `--resume-last` will surface the runtime error from
-  codex-companion itself — no separate per-round verification ritual.
+**Rounds 2–N.** For each ledger entry, respond per
+`references/claude-debate-rules.md` (ACCEPTED / REJECTED / PARTIALLY ACCEPTED /
+NEEDS_USER) and update the ledger (**INV-LEDGER-1**, **INV-ESC-2**). Push back on
+at least one point per round when Codex is genuinely wrong; concede everything
+that is genuinely right. Assemble the same template with the R2+
+`{ROUND_CONTEXT}`, your rebuttal plus the *full* updated plan as `{PLAN_TEXT}`,
+`{ATTACK_SURFACE}`, the round-N `{OUTPUT_CONTRACT}` (it carries the admissibility
+rules and `## NOTES`, **INV-ADMIT-1**) and the `{INCLUDE_REBUTTAL_RULES}` block;
+write to `$SD/p2-r<N>-rebuttal.md` and send with `--resume --round $N --last-id
+$LAST`.
 
-### Score Sanity Check
+**Confirmation turn.** When your rebuttal leaves every CRITICAL and MAJOR entry
+RESOLVED and none REGRESSED, the next turn is confirm-only (**INV-TERM-4**): use
+the confirmation `{ROUND_CONTEXT}` from the template header and add
+`--confirm-only`. Resolve or park every MINOR you can in that rebuttal — an open
+MINOR blocks Consensus (**INV-TERM-2**). If it validates with no REGRESSED entry, no admitted new
+finding, and **INV-TERM-2** holds, the run ends by Consensus.
 
-After each Codex scoring round, before displaying anything, Claude verifies:
+Every turn:
 
-1. **Parse**: the response has `## CATEGORY SCORES`, `## CRITIQUES`,
-   `## STRENGTHS`, `## VERDICT`. Category names match the locked framework
-   exactly (case-insensitive, trimmed, no extras, no duplicates). Each score
-   is in `[0, weight]`. Each critique has Evidence, Impact, Suggestion.
-   Parse failure: retry once with a correction prompt; second failure presents
-   raw output, marks the round non-authoritative, and asks the user.
-2. **Reconcile**: every per-category score *change* must cite a critique
-   whose status moved this round — an *increase* requires a critique in
-   that category newly RESOLVED with a specific plan-diff anchor; a
-   *decrease* requires a new or REGRESSED critique in that category.
-   Unjustified deltas are BLOCKED — the authoritative score for that
-   category retains the prior round's value (the model's number is shown
-   separately as "proposed (unreconciled)").
-3. **Cap**: the authoritative total is `min(sum(category scores),
-   theoretical_max)`. If the raw sum exceeds the cap, display as
-   `Score: {max}/{max} (raw: {sum}, capped)`. On the *first* cap event in
-   a run, ask the user once via AskUserQuestion whether the agreed
-   framework's theoretical max needs recalibration (the only legitimate
-   grounds: a capability or constraint that was excluded from the Phase 1
-   negotiation). User accepts → update the locked max for subsequent
-   rounds; rejects → cap stays. No silent recalibration.
+```bash
+bash "$UB" codex-turn --session "$SD" --prompt-file "$P" --resume \
+  --contract "$SD/framework.json" --round "$N" --last-id "$LAST" \
+  --repair-template "${ULTRABLITZ_ROOT:-$HOME/.claude/skills/ultrablitz}/references/prompts/format-repair.md" \
+  --label "p2-r$N" --model "$MODEL"
+```
 
-Only fully validated rounds mutate critique ledger / score history /
-consensus state. The reconciliation result is shown in the round card so
-the user can see which deltas were honored and which were blocked.
+Then, in order:
 
-### Critique Lifecycle
-
-See `references/claude-debate-rules.md` (Critique Lifecycle Tracking + Re-Raising Rules) for the ledger states and re-raise policy.
-
-### Round 1: Initial Submission
-
-1. Read `references/prompts/scoring-prompt.md`.
-2. Assemble prompt with R1 values for `{ROUND_CONTEXT}`,
-   `{INCLUDE_DIG_DEEPER}`, and `{INCLUDE_REBUTTAL_RULES}`, plus
-   `{PLAN_TEXT}`, `{DEBATE_PROTOCOL}`, `{OUTPUT_CONTRACT}` (the dynamic
-   contract from the agreed framework).
-3. Write to session temp dir.
-4. Submit: `node "$CODEX_COMPANION" task --resume-last --prompt-file ...`
-   (or fresh task if `--skip-framework`). No `--write`.
-5. Parse and validate output. Compute score from category sum.
-6. Initialize critique ledger.
-7. Display Round 1 results.
-8. Update lastActiveAt. Check termination.
-
-### Rounds 2-N: Debate Loop
-
-1. Analyze Codex's feedback.
-2. For each critique, per `references/claude-debate-rules.md`:
-   - **ACCEPTED**: incorporate, state what changed, update critique status to RESOLVED.
-   - **REJECTED**: push back with evidence, status stays UNRESOLVED.
-   - **PARTIALLY ACCEPTED**: take valid part, propose alternative, status to PARTIALLY_RESOLVED.
-3. MUST push back on at least one point per round if genuinely wrong.
-4. Assemble rebuttal using `references/prompts/scoring-prompt.md` with
-   R2+ values for `{ROUND_CONTEXT}`, `{INCLUDE_DIG_DEEPER}` (empty), and
-   `{INCLUDE_REBUTTAL_RULES}`; the rebuttal body fills `{PLAN_TEXT}` with
-   per-critique responses plus the full updated plan.
-5. Submit via `--resume-last` (`--prompt-file` for content >= 500 chars).
-6. Parse, validate, reconcile.
-7. Display round results with reconciliation.
-8. Update lastActiveAt and critique ledger. Check termination.
-
-### Termination
-
-One rule. No termination path silently drops unresolved findings —
-PARTIALLY_RESOLVED counts as unresolved here.
-
-1. **Consensus**: all critiques RESOLVED AND score within 3% of the
-   theoretical max → terminate normally.
-2. **User abort**: terminate immediately; final summary lists every
-   unresolved finding as "terminated by user abort."
-3. **Round-cap reached OR score unchanged 2 consecutive rounds**: escalate
-   every UNRESOLVED / REGRESSED finding to the user, one at a time, in
-   severity order (CRITICAL → MAJOR → MINOR, then by critique ID). For
-   each, present both positions (Claude vs Codex) and offer "Accept
-   Claude" / "Accept Codex" / "Provide your own." After every finding is
-   disposed, terminate. If interrupted mid-resolution, on resume reprompt
-   only the still-unresolved findings.
-
-User resolutions are final — no re-scoring or debate resumption after
-escalation. A user-resolved finding may only be re-raised in a future
-session if Codex cites plan text added or modified after the resolution.
-
-Per-finding mid-debate auto-escalation (oscillation, stuck) is subsumed
-by this rule: every escalation path now runs once at the end, in one
-batch, rather than firing repeatedly during the debate.
-
-### Budget Controls
-
-- **Max prompt size**: 30,000 characters (hard cap).
-- **Stage 1 overflow** (plan text > 20K chars): summarize into Plan Digest (key
-  sections, decisions, open questions). Full plan stored as `plan-full.md` in
-  session dir, referenced in Debate State Summary. If Codex cites a critique about
-  digested text, Claude MUST include that section verbatim in the next round.
-- **Stage 2 overflow** (active findings exceed remaining budget): cap at top 10
-  by severity (CRITICAL first, then MAJOR, then MINOR). Remaining referenced by
-  ID only: "See findings UB-11 through UB-15 from Round N."
-- **Debate State Summary** (used when prior context overflows): unresolved critique
-  IDs + summaries, resolved critique IDs (list only), current score and categories,
-  score trajectory, strongest remaining concern, latest plan text.
-- **Timeout**: 5 minutes per Codex call. Progress note at 3 minutes.
-- **Final summary** includes: total rounds (framework + evaluation), total Codex calls.
-
-### Prompt Sanitization
-
-- User plan text placed between explicit delimiters ("THE PLAN:" header + "---"
-  separator), never inside XML control tags.
-- Prior Codex output quoted in rebuttals: prefixed with "Codex said:", never in
-  control blocks.
-- Claude rebuttal text: markdown only, never XML tags.
-- Framework text: interpolated into output contract template only.
-
-### Error Handling
-
-| Class | Examples | Behavior |
-|-------|----------|----------|
-| RETRYABLE | Malformed output, Codex timeout | Retry once (with correction prompt for malformed). Second failure: escalate to user. |
-| FATAL | Thread resume fail, auth fail, companion not found | Abort. Show all completed rounds. Prior rounds remain valid. |
-| SALVAGEABLE | Partial output (some sections parsed) | Present parsed portions, flag missing sections, mark non-authoritative. Partial rounds do NOT update critique ledger, reconciliation state, consensus checks, or category scores. Only fully validated rounds mutate debate state. |
-
-Prior completed rounds are always preserved and shown regardless of error class.
-
-### Round Counting
-
-- **attemptCount**: total Codex calls including retries and partial/non-authoritative rounds.
-- **authoritativeRound**: only fully validated rounds that mutate debate state.
-- Round cap and stalemate logic use `authoritativeRound` only.
-- Display shows both: "Round 3/5 (attempt 4)" when they differ.
-- Non-authoritative attempts do not count toward cap or stalemate.
-
-## Display Format
-
-After each Phase 2 round:
+1. `ok:false` → handle by `failureClass` (**INV-FAIL-1**, **INV-CONT-1/2**). Nothing
+   is recorded. RETRYABLE: retry once, then ask the user. CONTINUITY: ask the user
+   to stop (authoritative through the last good round) or continue DEGRADED.
+   FORMAT: show the raw output as non-authoritative and ask retry-or-abort.
+2. `ok:true` → the output is already validated against the locked framework. Read
+   `$SD/<label>.validation.json` (e.g. `$SD/p2-r$N.validation.json`), which
+   `codex-turn` wrote. Apply the cap (**INV-SCORE-1**); on the first cap event of
+   the run ask the user once whether the max stands (**INV-CAP-2**); then
+   reconcile (**INV-SCORE-2**) — block any delta that no ledger change justifies.
+   Add `admissibility.admitted` ids to the ledger as UNRESOLVED; `admissibility.
+   noted` ids are shown, never ledgered, and never block termination
+   (**INV-ADMIT-1**). Set `lastCritiqueId` to `lastId`. A non-empty
+   `warnings` array means the call was mis-assembled (e.g. `--last-id 0` after
+   a round 1 that recorded findings): fix the flags and re-validate before
+   recording anything. If the session's `lastCritiqueId` really is 0 (round 1
+   found nothing), the warning is advisory and the round stands.
+3. `session-write` the new round, scores, ledger, `lastCritiqueId`,
+   `ledgerUnchangedRounds` (0 if any status changed or a finding was admitted
+   this round, else +1), `threadId`, `codexSessionId`, and `jobIds` entry (with
+   `formatRepair` when set).
+4. Display the round, then check termination (**INV-TERM-1/2/3/4/5**).
 
 ```
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-ULTRABLITZ — Round {N}/{MAX}
+ULTRABLITZ — Round {N} (soft target {S}, hard cap {H}){ DEGRADED/ADVISORY}{ CONFIRMATION}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-Score: {COMPUTED_SUM}/{MAX} ({+/-DELTA})
-
-Category Breakdown:
-  {Category 1}:  {score}/{weight}  {RECONCILED|BLOCKED}
-  {Category 2}:  {score}/{weight}  {RECONCILED|BLOCKED}
-  ...
-
-Codex's Key Critiques:
-{bulleted list with severity and lifecycle status}
-
-Claude's Response: (rounds 2+ only)
-{ACCEPTED/REJECTED/PARTIALLY ACCEPTED per critique}
-
-Reconciliation:
-{which deltas were justified, which were blocked, with reasons}
-
-Refined Plan: (if changes were made)
-{updated plan text}
+Score: {total}/{max} ({+/-delta}){ (format-repaired)}
+  {Category}: {score}/{weight}  {RECONCILED|BLOCKED}
+Edge Case Sweep: {covered}/{n} covered, UNCOVERED: {classes → UB-n}, N-A: {classes}   (round 1)
+Ledger: UB-{n} [{severity}] {category} — {status}{ (PARKED: needs user)}
+Claude's Response: {per entry, rounds 2+}
+Noted (not debated): {UB-n — reason}   (rounds 2+, if any)
+Reconciliation: {which deltas stood, which were blocked, why}
+Refined Plan: {if changed}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ```
 
-Final summary:
+**Anti-gaming.** Enforce the anti-gaming controls on every round (**INV-GAME-1**);
+a recycled critique with no new evidence stays RESOLVED (**INV-LEDGER-3**).
+
+**Stalemate is ledger-based.** `ledgerUnchangedRounds >= 2`, or at least one
+PARKED entry with every entry that is not RESOLVED PARKED, terminates the run
+as a stalemate (**INV-TERM-5**). Score drift without a ledger change is not
+progress.
+
+**Escalation is batched.** Findings that remain unresolved when the debate ends
+(hard cap or stalemate), PARKED entries included, go to the user in one
+AskUserQuestion at termination, never one at a time mid-debate (**INV-ESC-1**,
+**INV-ESC-2**). Do not interrupt a round to ask about a single finding.
+
+## Termination and the gate
+
+Terminate only per **INV-TERM-1**. Then:
+
+1. Persist artifacts (**E2**): `debate-log.md` and `refined-plan.md` into `--out`,
+   else `in-flight/innovations/<slug>/` when `~/workspace/dev/in-flight` exists,
+   else the session dir. Frontmatter: `reviewer`, `model`, `degraded`,
+   `authoritative`.
+2. `session-write '{"completed":true}'`, print the artifact paths, `run-unlock`.
+3. `bash "$UB" gate-arm "$runId"` — **the last Bash call of the run**: the hook
+   then denies every Bash/Edit/Write/NotebookEdit call until the gate clears.
+   From its JSON keep all three fields — `runId`, `unlockCode`, and `lock` (the
+   lock path). You cannot re-read them afterwards.
+4. Ask via AskUserQuestion: **Execute** / **Modify** / **Discard**.
+   - **Execute** → with the **Write tool**, write exactly
+     `{"runId":"<runId>","unlockCode":"<unlockCode>"}` to the `lock` path with its
+     `.lock` suffix replaced by `.confirmed`. That pre-validated single Write is
+     the hook's only carve-out and the only way to clear the gate from inside the
+     session: **no Bash call can clear it** — `gate-confirm` included, because the
+     hook denies the Bash call before it runs. Then implement.
+     If the Write is refused, **STOP** and tell the user; do not improvise another
+     route.
+   - **Modify** → the gate stays; discuss, regenerate the summary, re-ask.
+   - **Discard** → the run is closed with no implementation authority. Hand the
+     user the operator command to run **in their own terminal** (expand `$UB`):
+     `bash <skill>/hooks/ultrablitz-utils.sh gate-clear`. It must be typed by
+     them; run as a tool call it is denied.
+
+The gate fires after any termination that produced a usable refined plan. It does
+not fire if the user cancelled the run or Codex failed fatally before Round 1.
 
 ```
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-ULTRABLITZ — COMPLETE
+ULTRABLITZ — COMPLETE{ (DEGRADED: reason) | (ADVISORY)}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-Final Score: {SCORE}/{MAX}
-Rounds: {N} (framework) + {M} (evaluation)
-Codex Calls: {total}
-Score Trajectory: {R1} -> {R2} -> ... -> {RM}
-Termination: {reason}
-
-Agreed Framework:
-  {categories with weights}
-  Theoretical Maximum: {max}
-
-Final Refined Plan:
-{the plan as it stands after all rounds}
-
-Unresolved Disagreements: (if any)
-{points where Claude and Codex could not agree, with both positions}
+Final Score: {score}/{max}{ — non-authoritative}
+Rounds: {N} framework + {M} evaluation   Codex Calls: {attemptCount}
+Model: {resolved model}
+Trajectory: {r1} -> ... -> {rM}          Termination: {reason}
+Agreed Framework: {categories, max, attack surface}
+Final Refined Plan: {text}
+Unresolved: {UB-n findings with both positions and the user's ruling, if any}
+Noted (not debated): {UB-n — reason, if any}
+Artifacts: {paths}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ```
 
-## Post-Debate Confirmation Gate
+## Reviewer fallback
 
-After the debate completes and the ULTRABLITZ — COMPLETE summary is displayed,
-a mechanical confirmation gate activates to prevent unintended implementation.
+`--reviewer claude` runs the same prompts against an independent Claude subagent.
+It is never selected automatically: if Codex pre-flight fails, print the diagnosis
+and stop, and let the user re-invoke. ADVISORY runs are labelled in every round
+card and the summary (**INV-TERM-3**).
 
-### Gate Activation
+## Prompt hygiene
 
-1. Write the gate lock file as the LAST Bash call (uses noclobber for atomicity):
-   ```bash
-   set -C && echo '{"runId":"UUID","repoRoot":"PATH","createdAt":"ISO-8601","unlockCode":"UUID","pid":PID}' > /tmp/ultrablitz-gate-{REPO_HASH}.lock
-   ```
-   - `REPO_HASH`: first 16 chars of SHA256 of repo root in a git context, or of `"$(pwd -P)|$RUN_ID"` otherwise (per-runId scoping for non-git CWDs)
-   - `unlockCode`: fresh UUID generated at gate creation time
-   - If the file already exists (noclobber fails): an active gate exists for this repo.
-     Error: "An active ultrablitz gate exists. Complete or clear it first."
+Plan text goes between explicit delimiters (`THE PLAN:` … `---`), never inside XML
+control tags. Quote prior Codex output as `Codex said:` prose. Claude's rebuttals
+are markdown only. Keep every assembled prompt within **INV-BUDGET-1**.
 
-2. The PreToolUse hook (`ultrablitz-gate.sh`) now blocks ALL Edit, Write,
-   NotebookEdit, and Bash calls while the lock exists.
+## Critical rules
 
-3. Read, Grep, Glob, AskUserQuestion, Agent, WebSearch, WebFetch remain available.
-
-### User Confirmation
-
-Use AskUserQuestion immediately after the lock is created:
-
-**"The refined plan is ready. How would you like to proceed?"**
-
-Options:
-- **Execute** — "Implement the refined plan now"
-- **Modify** — "I want to make changes first"
-- **Discard** — "Don't implement, keep the refinement for reference"
-
-### Gate Resolution
-
-**On Execute:**
-1. Read the lock file to obtain the `unlockCode`.
-2. Write the confirmation file (the hook has a narrow, single-use carve-out for this):
-   ```
-   /tmp/ultrablitz-gate-{REPO_HASH}.confirmed
-   Content: {"runId":"UUID","unlockCode":"UUID"}
-   ```
-3. The hook validates the confirmation token against the lock pre-execution.
-   If valid: gate clears. All tools become available.
-4. As the first post-gate action, remove both lock and confirmation files (best-effort cleanup).
-5. Proceed with implementation of the refined plan.
-
-**On Modify:**
-- Lock stays active. Discuss changes with user.
-- When ready, re-present the AskUserQuestion gate with the modified plan.
-- Each modification cycle gets a fresh gate prompt.
-
-**On Discard:**
-- Run is closed. No implementation authority carried forward.
-- Instruct user to clear the lock: `! rm /tmp/ultrablitz-gate-*.lock /tmp/ultrablitz-gate-*.confirmed 2>/dev/null`
-- To implement later, user must make a new explicit request.
-
-### Gate Rules
-
-- The gate fires after ANY debate termination that produces a usable refined plan
-  (consensus, round cap, stalemate, user stops debate).
-- The gate does NOT fire when the user cancels ultrablitz entirely or Codex fails fatally.
-- **Implementation before confirmation is INVALID.** If the next assistant action
-  after the final summary would move toward implementation without gate clearance,
-  the hook blocks it mechanically.
-- The gate always reflects the CURRENT plan state. If modifications occurred,
-  regenerate the summary before re-presenting.
-
-### Singleton Invariant
-
-One active gate per repo when ultrablitz runs inside a git checkout (lock keyed by
-repo-root hash). When invoked from a non-git CWD — e.g., a workspace parent that
-contains multiple sibling project repos — the lock is keyed by `(cwd, runId)`,
-which is per-active-run rather than per-CWD. Two parallel ultrablitz sessions
-auditing different siblings under the same non-git parent will no longer collide.
-
-Enforced atomically via `set -C` (noclobber) on lock creation.
-Pre-flight also checks for existing locks as an advisory early warning:
-- Lock exists + <4h old + PID alive → refuse to start new run
-- Lock exists + <4h old + PID dead → warn (likely crashed), offer to clear
-- Lock exists + >4h old → warn (stale), offer to clear
-
-### Stale Lock Policy
-
-Stale locks (>4h) are NEVER auto-allowed. The hook denies with clear instructions
-to manually remove. No silent policy expiry.
-
-### Recovery
-
-If something goes wrong, the user can always force-clear:
-```
-! rm /tmp/ultrablitz-gate-*.lock /tmp/ultrablitz-gate-*.confirmed 2>/dev/null
-```
-
-## Iteration Caps
-
-| Phase | Soft Default | Hard Cap |
-|-------|-------------|----------|
-| Phase 1 (Framework) | 3 | **5** |
-| Phase 2 (Evaluation) | 5 | **10** |
-
-**Defaults are soft targets, not stop signals.** If unresolved findings remain when
-the default round count is reached, the debate CONTINUES automatically up to the
-hard cap. Rounds are never cut short to hit a default — every finding must be
-addressed before consensus.
-
-- `--framework-rounds N` and `--max-rounds N` set the soft target (user suggestion).
-- If N exceeds the hard cap, clamp with a warning.
-- The debate stops ONLY when: consensus is reached (all findings resolved), the
-  hard cap is hit, the user aborts, or stalemate is detected.
-- If the hard cap is reached with findings still unresolved, display them explicitly
-  in the final summary as "Unresolved at hard cap."
-
-## Critical Rules
-
-- **NEVER** add `--write` to any Codex invocation.
-- **NEVER** modify files in the user's repository during the debate.
-- **NEVER** begin implementation without gate confirmation.
-- **ALWAYS** present Codex's raw output transparently.
-- **ALWAYS** maintain the current refined plan state across rounds.
-- **All content artifacts** written under `/tmp/ultrablitz-<runId>/` MUST use
-  the `.md` extension. State files use `session.json` and `completed`. The
-  `cleanup.error` file is written only by `trash-session` on
-  failure. Gate files (`/tmp/ultrablitz-gate-*.{lock,confirmed}`) keep their
-  semantic extensions and are unaffected. Any other extension under the
-  session directory is a protocol violation.
-- **Every Codex invocation** (`task` or `--resume-last`, in BOTH phases) MUST
-  be preceded by `bash "$(dirname "$0")/hooks/ultrablitz-utils.sh" validate-session "$runId"`.
-  Nonzero exit aborts the round and surfaces the offending files. Run
-  `validate-session` immediately after each prompt-file Write so contract
-  violations are caught at the write site, not just before Codex consumption.
-- **Use the helper** for: session creation (`create-session`), session cleanup
-  (`trash-session`, `cleanup-completed`), gate-lock creation
-  (`create-gate-lock`), and validation (`validate-session`). Do NOT call
-  `mkdir`, `mv`, `rm`, or `set -C` on ultrablitz paths directly — every
-  shell side-effect must go through a helper subcommand whose permission
-  rule is explicitly granted.
-- The agreed framework is LOCKED during Phase 2.
-- Authoritative scores are always evidence-backed via reconciliation.
-- Clean up session temp directory after loop completes (mark completed).
-- Track across rounds:
-  - `agreedFramework` — locked artifact from Phase 1
-  - `currentPlan` — plan text as refined
-  - `critiqueLedger` — critique IDs, statuses, lifecycle
-  - `scores[]` — authoritative scores per round
-  - `threadId` — verified each round
+- **NEVER** pass `--write` to Codex, and never let it modify the repo.
+- **NEVER** begin implementation before the gate clears.
+- **NEVER** hand-roll a Codex invocation, a session write, or a gate file — use the
+  subcommands (**INV-A9**). The one exception is the Execute confirmation Write
+  above, which no subcommand can reach from inside the session.
+- **ALWAYS** show Codex's raw output transparently.
+- **ALWAYS** keep the refined plan coherent, not a patchwork of accepted fixes.
+- The framework is locked during Phase 2; only the user's one-time answer to the
+  first cap event can change the max (**INV-CAP-2**).
+- Every file **you** write into the session dir is `.md` (prompts, plan, rebuttals,
+  logs). Only the subcommands write `.json`, `.err`, `completed`, `cleanup.error`.
+- Never `rm` a session or a gate file: `cleanup-completed` and `trash-session`
+  move to `~/.Trash`; `gate-clear` is the operator's.
+- Authoritative scores are evidence-backed (**INV-SCORE-2**); a DEGRADED or
+  ADVISORY run never claims one.
+- Release the run lock (`run-unlock`) and mark the session completed on every exit
+  path, including aborts — always before `gate-arm`, after which no Bash runs.

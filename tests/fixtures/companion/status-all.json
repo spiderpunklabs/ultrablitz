@@ -1,0 +1,24 @@
+{
+  "_recorded": "2026-08-27 from `codex-companion.mjs status --all --json` (1.0.3). Trimmed to the fields ultrablitz reads. Note `running` and `latestFinished` are already scoped to the current Claude session (evidence E13).",
+  "workspaceRoot": "/Users/arjunmenon/workspace/dev/ultrablitz",
+  "config": { "stopReviewGate": false },
+  "sessionRuntime": { "mode": "shared", "label": "shared session" },
+  "running": [],
+  "latestFinished": {
+    "id": "task-mtbcd4xl-h8tguf",
+    "kind": "task",
+    "jobClass": "task",
+    "workspaceRoot": "/Users/arjunmenon/workspace/dev/ultrablitz",
+    "sessionId": "597e8028-0877-478c-bf1b-2e0017b495bf",
+    "status": "failed",
+    "phase": "failed",
+    "threadId": "01a042a0-4ef9-7ea3-ad92-3e6fcf254583",
+    "turnId": "01a042a0-55f0-7a71-b9c5-8d8ed8c6dbbf",
+    "summary": "Your access token could not be refreshed because your refresh token was already used. Please log out and sign in again.",
+    "logFile": "/Users/arjunmenon/.claude/plugins/data/codex-openai-codex/state/ultrablitz-28b79c02e9e49873/jobs/task-mtbcd4xl-h8tguf.log",
+    "createdAt": "2026-08-27T09:49:54.105Z",
+    "completedAt": "2026-08-27T09:50:04.475Z"
+  },
+  "recent": [],
+  "needsReview": false
+}
