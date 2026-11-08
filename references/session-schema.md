@@ -37,8 +37,10 @@ Created by `session-new` with these initial values:
 | `attemptCount` | number | `0` | Every Codex call, including retries and repair turns (INV-ROUND-1). |
 | `threadId` | string\|null | `null` | Codex thread identity, verified every turn (INV-CONT-1). |
 | `jobIds` | array | `[]` | Companion job ids issued for this run. |
-| `framework` | object\|null | `null` | The locked framework artifact after Phase 1 (`{categories, max, unresolved}`). |
-| `ledger` | array | `[]` | Critique ledger entries; states per INV-LEDGER-1. |
+| `framework` | object\|null | `null` | The locked framework artifact after Phase 1 (`{categories, max, attackSurface, unresolved}`, INV-SURFACE-1). |
+| `ledger` | array | `[]` | Critique ledger entries, one per admitted `UB-n` (shape below); states per INV-LEDGER-1. |
+| `lastCritiqueId` | number | `0` | Highest `UB-n` in play; passed as `codex-turn --last-id` (INV-ID-1, INV-ADMIT-1). |
+| `ledgerUnchangedRounds` | number | `0` | Consecutive authoritative rounds with no status change and no admitted finding; `>= 2` is stalemate (INV-TERM-5). |
 | `scores` | array | `[]` | Authoritative per-round score records (INV-SCORE-1, INV-SCORE-2). |
 | `planPath` | string\|null | `null` | Path to `plan-full.md` in the session dir when the plan was digested (INV-BUDGET-1). |
 | `degraded` | object | `{"reason": null}` | Non-null `reason` marks the run DEGRADED (INV-CONT-2, INV-TERM-3). |
@@ -49,6 +51,21 @@ Created by `session-new` with these initial values:
 `foreign: false` when `claudeSessionId` matches the caller's
 `$CLAUDE_SESSION_ID`, otherwise `foreign: true` plus a `foreignDetail` string
 naming both session ids.
+
+### Ledger entry shape
+
+```json
+{ "id": "UB-3", "severity": "MAJOR", "category": "Gate & safety integrity",
+  "summary": "one line", "status": "UNRESOLVED", "raisedRound": 1,
+  "statusRound": 2, "needsUser": false, "linkedTo": null,
+  "history": [ { "round": 2, "from": "UNRESOLVED", "to": "PARTIALLY_RESOLVED", "change": "what changed" } ] }
+```
+
+`id` is Codex's (INV-ID-1), never renumbered. `needsUser:true` marks a PARKED
+entry (INV-ESC-2); the status itself stays one of the four INV-LEDGER-1 states.
+`linkedTo` names the original id when the entry is a permitted re-raise
+(INV-LEDGER-2). Noted findings (INV-ADMIT-1) are not ledger entries; they live
+in the round's `validation.json` only.
 
 ### `codexSessionId` is observed, never minted
 

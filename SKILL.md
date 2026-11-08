@@ -38,14 +38,18 @@ UB="${ULTRABLITZ_ROOT:-$HOME/.claude/skills/ultrablitz}/hooks/ultrablitz-utils.s
 | `doctor [--json]` | prerequisites, companion, hook registration |
 | `session-new` / `session-read <dir>` / `session-write <dir> <patch>` | run state (`references/session-schema.md`) |
 | `run-lock <runId> [--force-new]` / `run-unlock` | one active run per repo |
-| `codex-turn --session <dir> --prompt-file <f> [--resume] [--contract <f>] [--repair-template <f>] [--label L] [--timeout-ms N] [--model M] [--effort E]` | one validated Codex turn |
-| `validate-output --contract <f> --input <f> [--baseline <f>]` | enforce the output contract |
+| `codex-turn --session <dir> --prompt-file <f> [--resume] [--contract <f>] [--repair-template <f>] [--label L] [--round N] [--last-id N] [--confirm-only] [--timeout-ms N] [--model M] [--effort E]` | one validated Codex turn |
+| `validate-output --contract <f> --input <f> [--baseline <f>] [--round N] [--last-id N] [--confirm-only]` | enforce the output contract (**INV-ID-1**, **INV-SWEEP-1**, **INV-ADMIT-1**) |
+| `render-contract --contract <f> --round N` / `render-contract --contract <f> --part surface` | the `{OUTPUT_CONTRACT}` text for a round / the `{ATTACK_SURFACE}` list (**INV-SURFACE-1**) |
 | `render-repair --template <f> --contract <f> --offending <f>` | **INTERNAL — never call during a run.** `codex-turn --repair-template` owns the one repair **INV-FORMAT-1** permits. Exists for `prompt-lint`. |
 | `gate-arm <runId>` / `gate-status` / `gate-confirm` / `gate-clear` | post-debate gate; the last two are operator-only once armed (see Termination) |
 | `cleanup-completed` / `cleanup-list` / `trash-session <dir>` | session hygiene — sessions are moved to `~/.Trash`, never deleted |
 
 `codex-turn` returns one JSON object:
 `{ok, failureClass, jobId, threadId, codexSessionId, outputFile, attempts, formatRepair, message}`.
+Its validation record, `$SD/<label>.validation.json`, carries
+`{ok, errors, categories, total, critiques[{id,severity,category}], lastId,
+newIds, admissibility{admitted[], noted[{id,reason}]}, sweep}`.
 Failure classes and their state effects are **INV-FAIL-1**; none of them mutate
 the ledger, scores, or the round counter.
 
@@ -102,7 +106,9 @@ If no plan text is given, ask what to debate. Flags override implied intent.
 
 1. **Propose.** Read the plan's domain and propose 3–6 categories with weights
    summing to 100, a one-sentence definition each, a theoretical maximum with a
-   reason, and the domain's attack surface. Show it to the user.
+   reason, and the domain's attack surface: 3–8 one-line failure classes
+   specific to THIS plan, concrete enough to probe ("double charge on payment
+   retry", not "reliability") (**INV-SURFACE-1**). Show it to the user.
 2. **Critique.** Assemble `references/prompts/framework-prompt.md` for round 1
    (`{ROUND_CONTEXT}`, `{PLAN_SUMMARY}`, `{FRAMEWORK_PROPOSAL}`,
    `{DEBATE_PROTOCOL}`, `{FRAMEWORK_CONTRACT}` from
@@ -118,8 +124,11 @@ If no plan text is given, ask what to debate. Flags override implied intent.
    theoretical max takes the LOWER of the two. Unresolved fields go to the user,
    who must resolve them before Phase 2 starts.
 5. **Lock.** Write the framework to `framework.json` in the session dir
-   (`{categories:[{name,weight,definition}], max}`) — this file is the contract
-   passed to `codex-turn --contract`. Record it in `session.json` and display it.
+   (`{categories:[{name,weight,definition}], max, attackSurface:[3–8 strings]}`)
+   — this file is the contract passed to `codex-turn --contract` and
+   `render-contract --contract`. The attack surface is the list both sides
+   accepted under `## ATTACK SURFACE` (**INV-SURFACE-1**); it is as locked as
+   the categories. Record it in `session.json` and display it.
 
 ```
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -128,6 +137,7 @@ ULTRABLITZ — Framework Agreed
   {Category}: {weight}  — {definition}
   ...
 Theoretical Maximum: {max}/100   Reason: {why, if < 100}
+Attack Surface: {one line per locked failure class}
 Framework Rounds: {N}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ```
@@ -137,24 +147,43 @@ Framework Rounds: {N}
 One template, `references/prompts/scoring-prompt.md`, serves every round; its
 header lists the slots and which are empty on R1 versus R2+.
 
-**Round 1.** Assemble it with the R1 `{ROUND_CONTEXT}`, the full `{PLAN_TEXT}`,
-`{DEBATE_PROTOCOL}`, `{OUTPUT_CONTRACT}` generated from the locked framework, and
-the `{INCLUDE_DIG_DEEPER}` block; write to `$SD/p2-r1-scoring.md` and send with
-`--resume` so Codex keeps the framework context. Initialise the ledger.
+Two slots are rendered, never hand-typed (**INV-A9**): `{OUTPUT_CONTRACT}` is
+`render-contract --contract "$SD/framework.json" --round "$N"` and
+`{ATTACK_SURFACE}` is `render-contract --contract "$SD/framework.json" --part
+surface`. Codex names every finding `UB-n` (**INV-ID-1**); `$LAST` below is
+`session.json`'s `lastCritiqueId` — the highest id in play, 0 before round 1.
 
-**Rounds 2–N.** For each critique, respond per `references/claude-debate-rules.md`
-(ACCEPTED / REJECTED / PARTIALLY ACCEPTED) and update the ledger (**INV-LEDGER-1**).
-Push back on at least one point per round when Codex is genuinely wrong; concede
-everything that is genuinely right. Assemble the same template with the R2+
+**Round 1.** Assemble it with the R1 `{ROUND_CONTEXT}`, the full `{PLAN_TEXT}`,
+`{DEBATE_PROTOCOL}`, `{ATTACK_SURFACE}`, the round-1 `{OUTPUT_CONTRACT}` (it
+carries the `## EDGE CASE SWEEP`, **INV-SWEEP-1**) and the `{INCLUDE_DIG_DEEPER}`
+block; write to `$SD/p2-r1-scoring.md` and send with `--resume --round 1` so
+Codex keeps the framework context. Initialise the ledger from
+`validation.json`'s `critiques[]` (one entry per id, status UNRESOLVED) and set
+`lastCritiqueId` from its `lastId`. Show the sweep in the round card; every
+UNCOVERED class already has its critique by construction.
+
+**Rounds 2–N.** For each ledger entry, respond per
+`references/claude-debate-rules.md` (ACCEPTED / REJECTED / PARTIALLY ACCEPTED /
+NEEDS_USER) and update the ledger (**INV-LEDGER-1**, **INV-ESC-2**). Push back on
+at least one point per round when Codex is genuinely wrong; concede everything
+that is genuinely right. Assemble the same template with the R2+
 `{ROUND_CONTEXT}`, your rebuttal plus the *full* updated plan as `{PLAN_TEXT}`,
-and the `{INCLUDE_REBUTTAL_RULES}` block; write to `$SD/p2-r<N>-rebuttal.md` and
-send with `--resume`.
+`{ATTACK_SURFACE}`, the round-N `{OUTPUT_CONTRACT}` (it carries the admissibility
+rules and `## NOTES`, **INV-ADMIT-1**) and the `{INCLUDE_REBUTTAL_RULES}` block;
+write to `$SD/p2-r<N>-rebuttal.md` and send with `--resume --round $N --last-id
+$LAST`.
+
+**Confirmation turn.** When your rebuttal leaves every CRITICAL and MAJOR entry
+RESOLVED and none REGRESSED, the next turn is confirm-only (**INV-TERM-4**): use
+the confirmation `{ROUND_CONTEXT}` from the template header and add
+`--confirm-only`. If it validates with no REGRESSED entry, no admitted new
+finding, and **INV-TERM-2** holds, the run ends by Consensus.
 
 Every turn:
 
 ```bash
 bash "$UB" codex-turn --session "$SD" --prompt-file "$P" --resume \
-  --contract "$SD/framework.json" \
+  --contract "$SD/framework.json" --round "$N" --last-id "$LAST" \
   --repair-template "${ULTRABLITZ_ROOT:-$HOME/.claude/skills/ultrablitz}/references/prompts/format-repair.md" \
   --label "p2-r$N" --model "$MODEL"
 ```
@@ -166,23 +195,29 @@ Then, in order:
    to stop (authoritative through the last good round) or continue DEGRADED.
    FORMAT: show the raw output as non-authoritative and ask retry-or-abort.
 2. `ok:true` → the output is already validated against the locked framework. Read
-   the totals from `$SD/<label>.validation.json` (e.g. `$SD/p2-r$N.validation.json`),
-   which `codex-turn` wrote. Apply the cap (**INV-SCORE-1**); on the first cap
-   event of the run ask the user once whether the max stands (**INV-CAP-2**);
-   then reconcile (**INV-SCORE-2**) — block any delta that no ledger change
-   justifies.
-3. `session-write` the new round, scores, ledger, `threadId`, `codexSessionId`,
-   and `jobIds` entry (with `formatRepair` when set).
-4. Display the round, then check termination (**INV-TERM-1/2/3**).
+   `$SD/<label>.validation.json` (e.g. `$SD/p2-r$N.validation.json`), which
+   `codex-turn` wrote. Apply the cap (**INV-SCORE-1**); on the first cap event of
+   the run ask the user once whether the max stands (**INV-CAP-2**); then
+   reconcile (**INV-SCORE-2**) — block any delta that no ledger change justifies.
+   Add `admissibility.admitted` ids to the ledger as UNRESOLVED; `admissibility.
+   noted` ids are shown, never ledgered, and never block termination
+   (**INV-ADMIT-1**). Set `lastCritiqueId` to `lastId`.
+3. `session-write` the new round, scores, ledger, `lastCritiqueId`,
+   `ledgerUnchangedRounds` (0 if any status changed or a finding was admitted
+   this round, else +1), `threadId`, `codexSessionId`, and `jobIds` entry (with
+   `formatRepair` when set).
+4. Display the round, then check termination (**INV-TERM-1/2/3/4/5**).
 
 ```
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-ULTRABLITZ — Round {N} (soft target {S}, hard cap {H}){ DEGRADED/ADVISORY}
+ULTRABLITZ — Round {N} (soft target {S}, hard cap {H}){ DEGRADED/ADVISORY}{ CONFIRMATION}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Score: {total}/{max} ({+/-delta}){ (format-repaired)}
   {Category}: {score}/{weight}  {RECONCILED|BLOCKED}
-Codex's Key Critiques: {severity, id, lifecycle status}
-Claude's Response: {per critique, rounds 2+}
+Edge Case Sweep: {covered}/{n} covered, UNCOVERED: {classes → UB-n}, N-A: {classes}   (round 1)
+Ledger: UB-{n} [{severity}] {category} — {status}{ (PARKED: needs user)}
+Claude's Response: {per entry, rounds 2+}
+Noted (not debated): {UB-n — reason}   (rounds 2+, if any)
 Reconciliation: {which deltas stood, which were blocked, why}
 Refined Plan: {if changed}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -191,10 +226,14 @@ Refined Plan: {if changed}
 **Anti-gaming.** Enforce the anti-gaming controls on every round (**INV-GAME-1**);
 a recycled critique with no new evidence stays RESOLVED (**INV-LEDGER-3**).
 
+**Stalemate is ledger-based.** `ledgerUnchangedRounds >= 2`, or every entry that
+is not RESOLVED being PARKED, terminates the run as a stalemate (**INV-TERM-5**).
+Score drift without a ledger change is not progress.
+
 **Escalation is batched.** Findings that remain unresolved when the debate ends
-(hard cap or stalemate) go to the user in one batch at termination, never one at
-a time mid-debate (**INV-ESC-1**). Do not interrupt a round to ask about a single
-finding.
+(hard cap or stalemate), PARKED entries included, go to the user in one
+AskUserQuestion at termination, never one at a time mid-debate (**INV-ESC-1**,
+**INV-ESC-2**). Do not interrupt a round to ask about a single finding.
 
 ## Termination and the gate
 
@@ -235,9 +274,10 @@ Final Score: {score}/{max}{ — non-authoritative}
 Rounds: {N} framework + {M} evaluation   Codex Calls: {attemptCount}
 Model: {resolved model}
 Trajectory: {r1} -> ... -> {rM}          Termination: {reason}
-Agreed Framework: {categories, max}
+Agreed Framework: {categories, max, attack surface}
 Final Refined Plan: {text}
-Unresolved: {findings with both positions, if any}
+Unresolved: {UB-n findings with both positions and the user's ruling, if any}
+Noted (not debated): {UB-n — reason, if any}
 Artifacts: {paths}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ```
