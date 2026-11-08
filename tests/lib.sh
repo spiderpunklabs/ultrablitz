@@ -6,6 +6,11 @@
 # before each case, and uses the assert helpers. Exit status is the failure
 # count, so `run.sh` can sum them.
 
+# bash >= 5.2 expands "&" in a ${var/pat/rep} replacement to the matched text
+# (patsub_replacement); macOS bash 3.2 does not. Fixtures replace text that
+# contains "&" ("Gate & safety integrity"), so pin the 3.2 meaning everywhere.
+shopt -u patsub_replacement 2>/dev/null || true
+
 UB_PASS=0
 UB_FAIL=0
 UB_CURRENT=""

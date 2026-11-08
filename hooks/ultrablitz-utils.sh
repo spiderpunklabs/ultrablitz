@@ -126,8 +126,12 @@ ub_check_state_dir() {
     return 1
   }
   local owner mode
-  owner="$(stat -f '%u' "$d" 2>/dev/null || stat -c '%u' "$d" 2>/dev/null)"
-  mode="$(stat -f '%Lp' "$d" 2>/dev/null || stat -c '%a' "$d" 2>/dev/null)"
+  # GNU stat first: GNU reads "stat -f FMT" as --file-system plus a file
+  # operand named FMT, prints filesystem data for $d and exits non-zero, so a
+  # BSD-first probe concatenates garbage with the fallback. BSD stat rejects
+  # -c with empty stdout, so this order is clean on both.
+  owner="$(stat -c '%u' "$d" 2>/dev/null || stat -f '%u' "$d" 2>/dev/null)"
+  mode="$(stat -c '%a' "$d" 2>/dev/null || stat -f '%Lp' "$d" 2>/dev/null)"
   [ "$owner" = "$(id -u)" ] || {
     echo "state dir not owned by us: $d" >&2
     return 1
@@ -151,7 +155,7 @@ ub_check_leaf() {
     return 1
   }
   local owner
-  owner="$(stat -f '%u' "$f" 2>/dev/null || stat -c '%u' "$f" 2>/dev/null)"
+  owner="$(stat -c '%u' "$f" 2>/dev/null || stat -f '%u' "$f" 2>/dev/null)"
   [ "$owner" = "$(id -u)" ] || {
     echo "not owned by us: $f" >&2
     return 1

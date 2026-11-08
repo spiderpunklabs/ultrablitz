@@ -12,7 +12,7 @@ trap 'rm -rf "$SANDBOX"' EXIT
 
 t "state-dir is created mode 700 with no double slash"
 out="$(bash "$UTILS" state-dir)"
-mode="$(stat -f '%Lp' "$out" 2>/dev/null || stat -c '%a' "$out")"
+mode="$(stat -c '%a' "$out" 2>/dev/null || stat -f '%Lp' "$out")"
 assert_eq "$mode" "700"
 t "default state-dir path has no '//' even when TMPDIR ends in a slash"
 # The default composition is what the gate hook recomputes independently, so it
@@ -69,7 +69,7 @@ assert_json "$(cat "$SD/session.json")" '"\(.lastCritiqueId) \(.ledgerUnchangedR
 t "session-write leaves the rest of the session intact"
 assert_json "$(cat "$SD/session.json")" '.authoritative' 'true'
 t "session dir is mode 700"
-mode="$(stat -f '%Lp' "$SD" 2>/dev/null || stat -c '%a' "$SD")"
+mode="$(stat -c '%a' "$SD" 2>/dev/null || stat -f '%Lp' "$SD")"
 assert_eq "$mode" "700"
 
 t "session-write merges a patch atomically"

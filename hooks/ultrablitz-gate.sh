@@ -100,7 +100,7 @@ path_untrusted() {
   local p="$1"
   [ -L "$p" ] && return 0
   local owner
-  owner="$(stat -f '%u' "$p" 2>/dev/null || stat -c '%u' "$p" 2>/dev/null)"
+  owner="$(stat -c '%u' "$p" 2>/dev/null || stat -f '%u' "$p" 2>/dev/null)"
   [ "$owner" = "$(id -u)" ] || return 0
   return 1
 }
@@ -109,7 +109,7 @@ if [ -L "$STATE_DIR" ] || path_untrusted "$STATE_DIR"; then
   STATE_DIR_UNTRUSTED=1
   deny "Ultrablitz gate: state directory is a symlink or not owned by you ($STATE_DIR). Refusing to trust it. Clear with: $CLEAR_CMD"
 fi
-STATE_MODE="$(stat -f '%Lp' "$STATE_DIR" 2>/dev/null || stat -c '%a' "$STATE_DIR" 2>/dev/null)"
+STATE_MODE="$(stat -c '%a' "$STATE_DIR" 2>/dev/null || stat -f '%Lp' "$STATE_DIR" 2>/dev/null)"
 if [ "$STATE_MODE" != "700" ]; then
   STATE_DIR_UNTRUSTED=1
   deny "Ultrablitz gate: state directory mode is $STATE_MODE, expected 700 ($STATE_DIR). Clear with: $CLEAR_CMD"
