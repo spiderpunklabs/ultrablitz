@@ -478,6 +478,50 @@ out="$(v)"; rc=$?
 assert_rc "$rc" 1
 assert_contains "$out" "without a UB-n id"
 
+t "a fieldless column-0 line with an id and a bracketed severity fails"
+mk "$(compose --crit2 'UB-2 — [CRITICAL] lock not held across the write
+UB-3 — [MAJOR] retry loop has no cap
+')"
+out="$(v)"; rc=$?
+assert_rc "$rc" 1
+assert_contains "$out" "2 critique header(s) not in the form"
+
+t "a fieldless list item with an id and an unbracketed severity fails"
+mk "$(compose --crit2 '- UB-2 — CRITICAL — lock not held across the write
+')"
+out="$(v)"; rc=$?
+assert_rc "$rc" 1
+assert_contains "$out" "not in the form UB-n"
+
+t "a fieldless bold-led bracketed severity at column 0 fails"
+mk "$(compose --crit2 '**[MAJOR]** Gate bypass
+')"
+out="$(v)"; rc=$?
+assert_rc "$rc" 1
+assert_contains "$out" "without a UB-n id"
+
+t "a - None. sub-bullet inside a field is not a None line"
+mk "$(compose --crit1 'UB-1 **[MAJOR]** Something
+   - Category: Gate & safety integrity
+   - Evidence: e
+   - Impact: i
+   - Suggestion: options:
+     - None.
+')"
+out="$(v)"
+assert_json "$out" '"\(.ok) \(.critiqueCount)"' 'true 1'
+
+t "CRLF input parses, including an empty CRITIQUES section"
+printf '%s\r\n' "$scores" '## CRITIQUES:' '- None.' '' '## NOTES:' '- None.' '' '## STRENGTHS:' '- One.' '' '## VERDICT:' 'Ship it.' > "$SANDBOX/out.md"
+out="$(v)"
+assert_json "$out" '"\(.ok) \(.critiqueCount)"' 'true 0'
+
+t "N/A is accepted as a sweep status"
+mk "$(compose --sweep "$(printf '%s\n' "$sweep_txt" | sed 's/^- scale: COVERED — section 4/- scale: N\/A — no fan-out/')
+")"
+out="$(v --round 1)"
+assert_json "$out" '"\(.ok) \(.sweep.notApplicable | join(","))"' 'true scale,permissions-and-identity,migration-and-compat'
+
 t "a sweep row whose status does not lead the text fails"
 mk "$(compose --sweep "$(printf '%s\n' "$sweep_txt" | sed 's/^- concurrency: UNCOVERED — see UB-1/- concurrency: not covered anywhere/')
 ")"
@@ -579,6 +623,49 @@ out="$(v --round 1 --baseline "$SANDBOX/base.md")"; rc=$?
 assert_rc "$rc" 1
 t "the allowance is stated in the error"
 assert_contains "$out" "at most 1 may be added"
+
+# --- A broken parse is repairable: only id'd critiques are pinned ----------
+t "prose then fields (lost header) is reported"
+compose --crit2 'This also surfaces a second problem.
+   - Category: Operability & maintenance economics
+   - Evidence: e
+   - Impact: i
+   - Suggestion: s
+' > "$SANDBOX/base.md"
+cp "$SANDBOX/base.md" "$SANDBOX/out.md"
+out="$(v)"; rc=$?
+assert_rc "$rc" 1
+t "the repair that restores the lost header passes"
+mk "$(compose --crit2 "$crit2")"
+out="$(v --baseline "$SANDBOX/base.md")"; rc=$?
+assert_rc "$rc" 0
+t "a repair that drops an id'd critique still fails against a broken baseline"
+mk "$(compose --crit1 "$crit2")"
+out="$(v --baseline "$SANDBOX/base.md")"; rc=$?
+assert_rc "$rc" 1
+assert_contains "$out" "repair dropped UB-1"
+
+t "a repair may remove a pseudo-entry the broken baseline counted"
+compose --crit2 '- [MINOR] items were folded into NOTES.
+' > "$SANDBOX/base.md"
+mk "$good"
+out="$(v --baseline "$SANDBOX/base.md")"; rc=$?
+assert_rc "$rc" 0
+
+t "a restatement between a header and its fields is repairable"
+compose --crit1 'UB-1 **[MAJOR]** Something
+UB-1 is still MAJOR: the rebuttal moved the check but not the lock.
+   - Category: Gate & safety integrity
+   - Evidence: e
+   - Impact: i
+   - Suggestion: s
+' > "$SANDBOX/base.md"
+cp "$SANDBOX/base.md" "$SANDBOX/out.md"
+out="$(v)"; rc=$?
+assert_rc "$rc" 1
+mk "$good"
+out="$(v --baseline "$SANDBOX/base.md")"; rc=$?
+assert_rc "$rc" 0
 
 t "round 1: a repair may add the critique an UNCOVERED row pointed at a missing id"
 compose --sweep "$(printf '%s\n' "$sweep_txt" | sed 's/see UB-1/see UB-9/')

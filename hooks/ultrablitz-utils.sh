@@ -549,6 +549,8 @@ cmd_validate_output() {
     | ($newx | map(.id)) as $new
     | (if $b == "" then null
        else {scores: (cats($br) | map(.score)), ncrit: (crit($br)[1] | tonumber), ided: ided($br),
+             nided: (ided($br) | length),
+             broken: (((crit($br)[5] | tonumber) + (crit($br)[6] | tonumber) + (crit($br)[7] | tonumber)) > 0),
              owed: (if $round == 1
                     then (ided($br) | map(.id)) as $bids
                          | [es($br)[] | . as $e | select($e.status == "UNCOVERED" and ($e.ref == 0 or (($bids | index($e.ref)) == null)))] | length
@@ -609,8 +611,11 @@ cmd_validate_output() {
       + (if $base != null and ($base.scores | length > 0) and $base.scores != ($cats | map(.score))
          then ["repair changed scores: was [" + ($base.scores | join(",")) + "] now ["
                + ($cats | map(.score) | join(",")) + "]"] else [] end)
+      # A broken baseline parse (lost header, orphan fields, pseudo-entry)
+      # mis-counted, so the repair is held only to "no id-bearing critique dropped";
+      # the per-id checks below still pin the severity and Category of every id.
       + (if $base != null and $base.ncrit > 0
-            and ($ncrit < $base.ncrit or $ncrit > $base.ncrit + $base.owed)
+            and ($ncrit < $base.nided or (($base.broken | not) and $ncrit > $base.ncrit + $base.owed))
          then ["repair changed critique count: was \($base.ncrit) now \($ncrit)"
                + (if $base.owed > 0 then " (at most \($base.owed) may be added for UNCOVERED sweep rows)" else "" end)]
          else [] end)
@@ -787,6 +792,7 @@ ub_scan_output() {
     }
     function trim(v) { gsub(/^[[:space:]]+|[[:space:]]+$/, "", v); return v }
     function ubnum(v) { return match(toupper(v), /UB-[0-9]+/) ? substr(v, RSTART + 3, RLENGTH - 3) + 0 : 0 }
+    { sub(/\r$/, "") }
     /[^[:space:]]/ { ne = 1 }
     /^#+[[:space:]]*CATEGORY SCORES/ { h1 = 1 }
     /^#+[[:space:]]*CRITIQUES/ { h2 = 1 }
@@ -820,9 +826,10 @@ ub_scan_output() {
         ur = toupper(rest); sub(/^[[:space:]]+/, "", ur)
         # The status must lead the text: a leftmost match would read
         # "not covered anywhere" as COVERED.
-        if (match(ur, /^(UNCOVERED|COVERED|N-A)/) && substr(ur, RLENGTH + 1) !~ /^[A-Z0-9]/)
+        if (match(ur, /^(UNCOVERED|COVERED|N-A|N\/A|NA)/) && substr(ur, RLENGTH + 1) !~ /^[A-Z0-9]/) {
           st = substr(ur, 1, RLENGTH)
-        else
+          if (st ~ /^N/) st = "N-A"
+        } else
           st = "INVALID"
         printf "E\t%s\t%s\t%d\n", cls, st, ubnum(rest)
       }
@@ -850,7 +857,7 @@ ub_scan_output() {
         match(nu, /\[(CRITICAL|MAJOR|MINOR)\]/); csev = substr(nu, RSTART + 1, RLENGTH - 2)
         next
       }
-      if (nu ~ /^(NONE|NO FINDINGS|NO CRITIQUES)\.?$/) { none = 1; next }
+      if (nu ~ /^(NONE|NO FINDINGS|NO CRITIQUES)\.?$/ && (cur == "" || $0 !~ /^[[:space:]]/)) { none = 1; next }
       if (isfield) {
         if (cur == "") { orphan++; next }
         v = trim(substr(nl, index(nl, ":") + 1))
@@ -872,11 +879,17 @@ ub_scan_output() {
       # fields; anything else is confirmed only by the field line that
       # follows it, so prose such as "UB-1 is still MAJOR: ..." passes.
       if ($0 !~ /^[[:space:]]/) {
+        raw = $0; gsub(/\*\*/, "", raw)
+        listed = (raw ~ /^([-*]|[0-9]+[.)])[[:space:]]/)
         kind = 0
         if (nu ~ /^UB-[0-9]+/ && nu ~ /(CRITICAL|MAJOR|MINOR)/) kind = 1
         else if (nu ~ /\[(CRITICAL|MAJOR|MINOR)\]/) kind = 2
-        if (kind == 2 && $0 ~ /^([-*]|[0-9]+[.)])[[:space:]]/) {
-          flush(); n++; cur = "x"; cid = "-"; csev = "-"; legacy++
+        # An id with a bracketed severity, any list item, or a bold-led
+        # bracket is an entry attempt on its own (fields or not). Only a bare
+        # column-0 mention ("UB-1 is still MAJOR: ...") waits for a field line.
+        if ((kind == 1 && (listed || nu ~ /\[(CRITICAL|MAJOR|MINOR)\]/)) || (kind == 2 && (listed || $0 ~ /^\*\*\[/))) {
+          flush(); n++; cur = "x"; cid = "-"; csev = "-"
+          if (kind == 1) unparsed++; else legacy++
           next
         }
         if (kind) { pend = kind; next }

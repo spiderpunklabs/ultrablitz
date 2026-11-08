@@ -277,7 +277,10 @@ count, and the id, severity and Category of every id'd critique — a repair may
 fix shape only, never substance — otherwise the turn is a FORMAT failure. The
 one exception is round 1: a repair may add one critique per UNCOVERED sweep row
 that named none, or named an id absent from the response (INV-SWEEP-1), since
-adding it is the only shape-preserving fix. Rounds that went through repair are recorded with
+adding it is the only shape-preserving fix. When the pre-repair parse was
+itself broken (a header not recognised, field lines outside any entry), the
+pre-repair count is unreliable, so the repair is held only to dropping no id'd
+critique; the per-id severity and Category checks still apply. Rounds that went through repair are recorded with
 `formatRepair:true` and listed in the debate log.
 
 ## Failure Classes
