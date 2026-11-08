@@ -13,8 +13,10 @@ Assemble by interpolating:
 - `{FRAMEWORK_PROPOSAL}` — R1: Claude's proposed framework. R2+: Claude's
   rebuttal text (per-objection responses + revised framework).
 - `{FRAMEWORK_CONTRACT}` — the Phase 1 contract block from
-  `references/output-contract.md`, verbatim, every round. Its MISSING
-  DIMENSIONS section already says "- None." is complete on rounds 2+.
+  `references/output-contract.md`, verbatim, every round. Its ATTACK SURFACE
+  and MISSING DIMENSIONS sections already say "- Unchanged." / "- None." are
+  complete on rounds 2+. The agreed attack surface is locked into
+  `framework.json` with the categories (INV-SURFACE-1).
 - `{DEBATE_PROTOCOL}` — tone blocks from `references/debate-protocol.md`.
 
 Write the assembled prompt to:

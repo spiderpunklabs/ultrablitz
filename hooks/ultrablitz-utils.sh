@@ -15,14 +15,24 @@
 #   session-write          atomically merge a JSON patch into session.json
 #   codex-turn             one validated Codex turn (background + wait + result)
 #   validate-output        check a Codex response against the locked framework
+#   render-contract        render the Phase 2 output contract / attack surface
 #   gate-arm               create the post-debate confirmation lock
 #   gate-confirm           clear the gate with the unlock code
 #   gate-status            report lock state for this repo
-#   cleanup-completed      remove completed sessions (exact paths, no glob rm)
-#   cleanup-list           list incomplete sessions with their rm commands
+#   cleanup-completed      trash completed sessions (exact paths, never rm)
+#   cleanup-list           list incomplete sessions with their trash commands
+#   trash-session          move one session dir to the trash
 set -uo pipefail
 
 UB_VERSION="6.0.0"
+
+# Where this script lives: references/ is resolved relative to it, so a
+# checkout, ~/.claude/skills/ultrablitz and a test sandbox all work unchanged.
+UB_SELF_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." 2>/dev/null && pwd -P)"
+
+# The edge-case classes every round-1 review must sweep (INV-SWEEP-1). The
+# single home of the list: render-contract prints it, validate-output requires it.
+UB_SWEEP_CLASSES="empty-or-none scale concurrency partial-failure-and-rollback permissions-and-identity time-and-ordering external-dependency-down human-misuse migration-and-compat"
 
 # Model preference, newest first. The single place this order is stated.
 # Per INV-MODEL-1: a model the USER names is never auto-changed; only a model
@@ -374,8 +384,8 @@ cmd_session_new() {
     '{schemaVersion:($sv|tonumber), runId:$rid, createdAt:$now, lastActiveAt:$now,
       claudeSessionId:$cs, codexSessionId:null, ownerPid:($pid|tonumber), ownerPidStart:$ps,
       phase:1, round:0, attemptCount:0, threadId:null, jobIds:[], framework:null,
-      ledger:[], scores:[], planPath:null, degraded:{reason:null}, authoritative:true,
-      completed:false}' > "$sd/session.json.tmp" || return 1
+      ledger:[], lastCritiqueId:0, ledgerUnchangedRounds:0, scores:[], planPath:null,
+      degraded:{reason:null}, authoritative:true, completed:false}' > "$sd/session.json.tmp" || return 1
   mv -f "$sd/session.json.tmp" "$sd/session.json" || return 1
   printf '%s\n' "$sd"
 }
@@ -469,17 +479,26 @@ cmd_resolve_model() {
 
 # --- output validation -------------------------------------------------------
 # validate-output --contract <framework.json> --input <file> [--baseline <file>]
-# framework.json: {"categories":[{"name":..,"weight":N}..],"max":N}
+#                 [--round N] [--last-id N] [--confirm-only]
+# framework.json: {"categories":[{"name":..,"weight":N}..],"max":N,
+#                  "attackSurface":[..]?}
+# --round 1 requires the EDGE CASE SWEEP section (INV-SWEEP-1); --round >= 2
+# classifies NEW findings (id > --last-id) as admitted or noted (INV-ADMIT-1)
+# without failing the turn; --confirm-only admits only CRITICAL new findings.
 cmd_validate_output() {
-  local contract="" input="" baseline=""
+  local contract="" input="" baseline="" round=0 last_id=0 confirm_only=false
   while [ $# -gt 0 ]; do
     case "$1" in
       --contract) contract="$2"; shift 2 ;;
       --input) input="$2"; shift 2 ;;
       --baseline) baseline="$2"; shift 2 ;;
+      --round) round="$2"; shift 2 ;;
+      --last-id) last_id="$2"; shift 2 ;;
+      --confirm-only) confirm_only=true; shift ;;
       *) echo "validate-output: unknown arg $1" >&2; return 2 ;;
     esac
   done
+  case "$round$last_id" in *[!0-9]*) echo "validate-output: --round and --last-id take integers" >&2; return 2 ;; esac
   [ -r "$contract" ] || { echo "validate-output: contract unreadable" >&2; return 2; }
   [ -r "$input" ] || { echo "validate-output: input unreadable" >&2; return 2; }
   # A broken contract fails loudly instead of validating vacuously (ok:true
@@ -496,22 +515,34 @@ cmd_validate_output() {
   local out stream bstream=""
   stream="$(ub_scan_output "$input")"
   [ -n "$baseline" ] && [ -r "$baseline" ] && bstream="$(ub_scan_output "$baseline")"
-  out="$(printf '%s\n' "$stream" | jq -Rs --arg b "$bstream" --slurpfile c "$contract" '
+  out="$(printf '%s\n' "$stream" | jq -Rs --arg b "$bstream" --slurpfile c "$contract" \
+    --argjson round "$round" --argjson lastId "$last_id" --argjson confirmOnly "$confirm_only" \
+    --arg sweep "$UB_SWEEP_CLASSES" '
     def rows: split("\n") | map(select(length > 0) | split("\t"));
     def norm: ascii_downcase | gsub("^\\s+|\\s+$"; "");
     def cats($r): [$r[] | select(.[0] == "S") | {name: .[1], score: (.[2] | tonumber)}];
     def crit($r): ([$r[] | select(.[0] == "C")][0]);
+    def xs($r): [$r[] | select(.[0] == "X")
+                 | {id: .[1], sev: .[2], cat: .[3], ev: (.[4]|tonumber), im: (.[5]|tonumber),
+                    su: (.[6]|tonumber), trig: (.[7] == "1"), miss: (.[8] == "1")}];
+    def es($r): [$r[] | select(.[0] == "E") | {cls: .[1], status: .[2], ref: (.[3] == "1")}];
     rows as $r | ($b | rows) as $br
     | cats($r) as $cats | crit($r) as $cc | ($cc[1] | tonumber) as $ncrit
+    | xs($r) as $xs | es($r) as $es
     | ([$r[] | select(.[0] == "H")][0]) as $hh
     | ($c[0].categories | map(.name)) as $want | ($cats | map(.name)) as $got
     | ($c[0].categories | map({key: (.name|norm), value: .weight}) | from_entries) as $w
+    | ($sweep | split(" ") | map(select(length > 0))) as $classes
+    | ([$xs[] | select(.id != "-")] | map(.id |= tonumber)) as $ided
+    | ([$ided[] | select(.id > $lastId)] | sort_by(.id)) as $newx
+    | ($newx | map(.id)) as $new
     | (if $b == "" then null
        else {scores: (cats($br) | map(.score)), ncrit: (crit($br)[1] | tonumber)} end) as $base
     | ( (if ([$r[] | select(.[0] == "M")][0][1]) == "1" then [] else ["output is empty"] end)
       + ([["## CATEGORY SCORES", $hh[1]], ["## CRITIQUES", $hh[2]],
           ["## STRENGTHS", $hh[3]], ["## VERDICT", $hh[4]]]
          | map(select(.[1] != "1") | "missing section header: " + .[0]))
+      + (if $round == 1 and $hh[5] != "1" then ["missing section header: ## EDGE CASE SWEEP (required on round 1)"] else [] end)
       + (($want | map(select(. as $x | ($got | map(norm) | index($x|norm)) == null)))
          | if length > 0 then ["missing categories: " + join(", ")] else [] end)
       + (($got | map(select(. as $g | ($want | map(norm) | index($g|norm)) == null)))
@@ -526,19 +557,142 @@ cmd_validate_output() {
              ["Suggestion", ($cc[4] | tonumber)]]
             | map(select(.[1] < $ncrit) | "\($ncrit) critiques but \(.[1]) \(.[0]) fields"))
          else [] end)
+      + (($cc[5] | tonumber) as $leg
+         | if $leg > 0 then ["\($leg) critique(s) without a UB-n id (INV-ID-1)"] else [] end)
+      + (($ided | group_by(.id) | map(select(length > 1) | "UB-\(.[0].id)"))
+         | if length > 0 then ["duplicate critique ids: " + join(", ")] else [] end)
+      + (if ($new | length) > 0 and $new != [range($lastId + 1; $lastId + 1 + ($new | length))]
+         then ["new critique ids must continue from UB-\($lastId + 1) and increase by one (INV-ID-1): got "
+               + ($new | map("UB-\(.)") | join(", "))] else [] end)
+      + (([$ided[] | select(.cat == "")] | length) as $nocat
+         | if $nocat > 0 then ["\($nocat) critique(s) without a Category line (INV-ID-1)"] else [] end)
+      + (([$ided[] | . as $e | select($e.cat != "" and (($want | map(norm) | index($e.cat|norm)) == null))
+                   | "UB-\($e.id)=\($e.cat)"])
+         | if length > 0 then ["critique Category not in the locked framework: " + join(", ")] else [] end)
+      + (if $round == 1 then
+           ((($classes - ($es | map(.cls))) | if length > 0 then ["edge case sweep missing classes: " + join(", ")] else [] end)
+            + ((($es | map(.cls)) - $classes) | if length > 0 then ["edge case sweep has unknown classes: " + join(", ")] else [] end)
+            + (($es | group_by(.cls) | map(select(length > 1) | .[0].cls)) | if length > 0 then ["edge case sweep repeats classes: " + join(", ")] else [] end)
+            + (([$es[] | select(.status == "UNCOVERED" and (.ref | not)) | .cls])
+               | if length > 0 then ["UNCOVERED sweep rows must name their critique (UB-n): " + join(", ")] else [] end))
+         else [] end)
       + (if $base != null and ($base.scores | length > 0) and $base.scores != ($cats | map(.score))
          then ["repair changed scores: was [" + ($base.scores | join(",")) + "] now ["
                + ($cats | map(.score) | join(",")) + "]"] else [] end)
       + (if $base != null and $base.ncrit > 0 and $base.ncrit != $ncrit
          then ["repair changed critique count: was \($base.ncrit) now \($ncrit)"] else [] end)
       ) as $errs
+    # Admissibility (INV-ADMIT-1) is a classification, never an error: a noted
+    # finding stays in the output for the user to see but does not enter the ledger.
+    | (if $round >= 2 then
+         ($newx | map(
+           if $confirmOnly then
+             (if .sev == "CRITICAL" and (.trig or .miss) then {id, admitted: true}
+              else {id, admitted: false, reason: "confirm-only round: only a CRITICAL finding with Triggered-by or Missed-because is admitted"} end)
+           else
+             (if .trig then {id, admitted: true}
+              elif .miss and .sev != "MINOR" then {id, admitted: true}
+              elif .miss then {id, admitted: false, reason: "MINOR finding on round \($round) with no Triggered-by"}
+              else {id, admitted: false, reason: "new finding on round \($round) with neither Triggered-by nor Missed-because"} end)
+           end))
+       else ($newx | map({id, admitted: true})) end) as $adm
     | {ok: (($errs | length) == 0), errors: $errs, categories: $cats,
-       critiqueCount: $ncrit, total: ($cats | map(.score) | add // 0)}')" || {
+       critiqueCount: $ncrit, total: ($cats | map(.score) | add // 0),
+       critiques: ($ided | map({id: "UB-\(.id)", severity: .sev, category: .cat})),
+       lastId: (([$ided[].id] + [$lastId]) | max),
+       newIds: ($new | map("UB-\(.)")),
+       admissibility: {admitted: ([$adm[] | select(.admitted) | "UB-\(.id)"]),
+                       noted: ([$adm[] | select(.admitted | not) | {id: "UB-\(.id)", reason}])},
+       sweep: (if $round == 1 then
+                 {covered: [$es[] | select(.status == "COVERED") | .cls],
+                  uncovered: [$es[] | select(.status == "UNCOVERED") | .cls],
+                  notApplicable: [$es[] | select(.status == "N-A") | .cls]}
+               else null end)}')" || {
     echo "validate-output: internal jq failure" >&2
     return 2
   }
   printf '%s\n' "$out"
   printf '%s' "$out" | jq -e '.ok' >/dev/null
+}
+
+# --- contract rendering -------------------------------------------------------
+# render-contract --contract <framework.json> --round N [--part contract|surface]
+#                 [--doc <output-contract.md>]
+# The Phase 2 contract text is rendered from references/output-contract.md
+# (the one documented template) plus the locked framework — never hand-typed.
+#   contract  (default) the {OUTPUT_CONTRACT} block for this round
+#   surface   the {ATTACK_SURFACE} bullet list locked in Phase 1 (INV-SURFACE-1)
+
+# Print the lines inside the first fenced block that follows a line containing
+# the marker text.
+ub_doc_block() {
+  awk -v marker="$2" '
+    index($0, marker) { insec = 1; next }
+    insec && /^```/ { if (infence) exit; infence = 1; next }
+    insec && infence { print }
+  ' "$1"
+}
+
+# Expand one {SLOT} in a template read on stdin with a (possibly multi-line,
+# possibly empty) value. Pure bash: see ub_render_repair for why not awk/sed.
+ub_expand() {
+  local slot="$1" value="$2" line pre post
+  while IFS= read -r line; do
+    case "$line" in
+      *"{$slot}"*)
+        pre="${line%%"{$slot}"*}"
+        post="${line#*"{$slot}"}"
+        [ -n "$pre" ] && printf '%s\n' "$pre"
+        [ -n "$value" ] && printf '%s\n' "$value"
+        [ -n "$post" ] && printf '%s\n' "$post"
+        ;;
+      *) printf '%s\n' "$line" ;;
+    esac
+  done
+  return 0
+}
+
+cmd_render_contract() {
+  local contract="" round="" part="contract" doc="$UB_SELF_ROOT/references/output-contract.md"
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --contract) contract="$2"; shift 2 ;;
+      --round) round="$2"; shift 2 ;;
+      --part) part="$2"; shift 2 ;;
+      --doc) doc="$2"; shift 2 ;;
+      *) echo "render-contract: unknown arg $1" >&2; return 2 ;;
+    esac
+  done
+  [ -r "$contract" ] || { echo "render-contract: --contract <framework.json> required" >&2; return 2; }
+  jq -e '(.categories | type == "array") and (.categories | length > 0)' "$contract" >/dev/null 2>&1 || {
+    echo "render-contract: contract is not valid framework JSON" >&2; return 2; }
+
+  if [ "$part" = "surface" ]; then
+    jq -r '.attackSurface // [] | if length == 0
+             then "- (none locked in Phase 1 — apply the generic attack surface)"
+             else .[] | "- " + . end' "$contract"
+    return 0
+  fi
+  [ "$part" = "contract" ] || { echo "render-contract: --part must be contract or surface" >&2; return 2; }
+  case "$round" in ''|*[!0-9]*) echo "render-contract: --round N (>= 1) required" >&2; return 2 ;; esac
+  [ -r "$doc" ] || { echo "render-contract: template doc unreadable: $doc" >&2; return 2; }
+
+  local base pre_frag="" post_frag="" cats classes
+  base="$(ub_doc_block "$doc" 'Phase 2 contract — base template')"
+  [ -n "$base" ] || { echo "render-contract: base template block not found in $doc" >&2; return 2; }
+  cats="$(jq -r '.categories[] | "- \(.name): {0-\(.weight)}"' "$contract")"
+  classes="$(printf '%s\n' "$UB_SWEEP_CLASSES" | tr ' ' '\n' \
+    | sed 's/.*/- &: COVERED | UNCOVERED | N-A — {one line: the plan text that covers it, the UB-n you raised, or why it cannot apply}/')"
+  if [ "$round" = "1" ]; then
+    pre_frag="$(ub_doc_block "$doc" 'Phase 2 — round 1 fragment')"
+  else
+    post_frag="$(ub_doc_block "$doc" 'Phase 2 — rounds 2+ fragment')"
+  fi
+  printf '%s\n' "$base" \
+    | ub_expand ROUND_PRE "$pre_frag" \
+    | ub_expand ROUND_POST "$post_frag" \
+    | ub_expand EDGE_CASE_CLASSES "$classes" \
+    | ub_expand CATEGORIES "$cats"
 }
 
 # One pass over a response file, emitting a tagged TSV stream for jq:
@@ -548,16 +702,30 @@ cmd_validate_output() {
 #   C <n> <ev> <im> <su>   critique count and Evidence/Impact/Suggestion counts
 # The single home of the response grammar — the baseline (pre-repair) file is
 # scanned by this same function, so the two parses can never drift apart.
+#   X <id> <sev> <cat> <ev> <im> <su> <trig> <miss>
+#                      one row per critique entry: UB id ("-" for a legacy
+#                      numbered entry), severity, Category line, sub-field
+#                      counts, Triggered-by / Missed-because presence
+#   E <class> <status> <ref>  one row per EDGE CASE SWEEP line (ref=1 when the
+#                      line names a UB-n critique)
 ub_scan_output() {
   awk '
+    function flush() {
+      if (cur != "")
+        printf "X\t%s\t%s\t%s\t%d\t%d\t%d\t%d\t%d\n", cid, csev, ccat, cev, cim, csu, ctrig, cmiss
+      cur = ""; cid = ""; csev = ""; ccat = ""; cev = 0; cim = 0; csu = 0; ctrig = 0; cmiss = 0
+    }
     /[^[:space:]]/ { ne = 1 }
     index($0, "## CATEGORY SCORES") { h1 = 1 }
     index($0, "## CRITIQUES") { h2 = 1 }
     index($0, "## STRENGTHS") { h3 = 1 }
     index($0, "## VERDICT") { h4 = 1 }
+    index($0, "## EDGE CASE SWEEP") { h5 = 1 }
+    index($0, "## NOTES") { h6 = 1 }
+    /^## / { if (inc) flush(); inblk = 0; inc = 0; insw = 0 }
     /^## CATEGORY SCORES/ { inblk = 1; next }
-    /^## CRITIQUES/ { inc = 1 }
-    /^## / { inblk = 0; if (!/^## CRITIQUES/) inc = 0 }
+    /^## CRITIQUES/ { inc = 1; next }
+    /^## EDGE CASE SWEEP/ { insw = 1; next }
     inblk && /^[[:space:]]*-[[:space:]]*.+:[[:space:]]*-?[0-9]+[[:space:]]*$/ {
       line = $0
       sub(/^[[:space:]]*-[[:space:]]*/, "", line)
@@ -568,14 +736,43 @@ ub_scan_output() {
       gsub(/^[[:space:]]+|[[:space:]]+$/, "", name)
       printf "S\t%s\t%s\n", name, score
     }
-    inc && /^[[:space:]]*[0-9]+\./ && !/^## / { n++ }
-    /^[[:space:]]*-[[:space:]]*Evidence:/ { ev++ }
-    /^[[:space:]]*-[[:space:]]*Impact:/ { im++ }
-    /^[[:space:]]*-[[:space:]]*Suggestion:/ { su++ }
+    insw && /^[[:space:]]*-[[:space:]]*[a-z][a-z-]*:[[:space:]]*(COVERED|UNCOVERED|N-A)/ {
+      line = $0
+      sub(/^[[:space:]]*-[[:space:]]*/, "", line)
+      idx = index(line, ":")
+      cls = substr(line, 1, idx - 1)
+      rest = substr(line, idx + 1)
+      match(rest, /(COVERED|UNCOVERED|N-A)/)
+      st = substr(rest, RSTART, RLENGTH)
+      printf "E\t%s\t%s\t%d\n", cls, st, (rest ~ /UB-[0-9]+/) ? 1 : 0
+    }
+    # Critique entry header: "UB-7 **[MAJOR]** summary" (a leading "3. " or
+    # bold around the id is tolerated; the id and the bracketed severity are not).
+    inc && /^[[:space:]]*([0-9]+\.[[:space:]]+)?(\*\*)?UB-[0-9]+(\*\*)?[[:space:]]+\*\*\[(CRITICAL|MAJOR|MINOR)\]\*\*/ {
+      flush(); n++; cur = "x"
+      match($0, /UB-[0-9]+/); cid = substr($0, RSTART + 3, RLENGTH - 3)
+      match($0, /\[(CRITICAL|MAJOR|MINOR)\]/); csev = substr($0, RSTART + 1, RLENGTH - 2)
+      next
+    }
+    # Legacy numbered entry without a UB id: counted, reported as an error by jq.
+    inc && /^[[:space:]]*[0-9]+\.[[:space:]]/ { flush(); n++; legacy++; cur = "x"; cid = "-"; csev = "-"; next }
+    cur != "" && /^[[:space:]]*-[[:space:]]*Category:/ {
+      line = $0
+      sub(/^[[:space:]]*-[[:space:]]*Category:[[:space:]]*/, "", line)
+      gsub(/\*\*/, "", line)
+      gsub(/[[:space:]]+$/, "", line)
+      ccat = line
+    }
+    cur != "" && /^[[:space:]]*-[[:space:]]*Evidence:/ { cev++; ev++ }
+    cur != "" && /^[[:space:]]*-[[:space:]]*Impact:/ { cim++; im++ }
+    cur != "" && /^[[:space:]]*-[[:space:]]*Suggestion:/ { csu++; su++ }
+    cur != "" && /^[[:space:]]*-[[:space:]]*Triggered-by:/ { ctrig = 1 }
+    cur != "" && /^[[:space:]]*-[[:space:]]*Missed-because:/ { cmiss = 1 }
     END {
+      if (inc) flush()
       printf "M\t%d\n", ne + 0
-      printf "H\t%d\t%d\t%d\t%d\n", h1 + 0, h2 + 0, h3 + 0, h4 + 0
-      printf "C\t%d\t%d\t%d\t%d\n", n + 0, ev + 0, im + 0, su + 0
+      printf "H\t%d\t%d\t%d\t%d\t%d\t%d\n", h1 + 0, h2 + 0, h3 + 0, h4 + 0, h5 + 0, h6 + 0
+      printf "C\t%d\t%d\t%d\t%d\t%d\n", n + 0, ev + 0, im + 0, su + 0, legacy + 0
     }' "$1"
 }
 
@@ -587,6 +784,7 @@ ub_scan_output() {
 cmd_codex_turn() {
   local sd="" pf="" resume=0 timeout_ms=300000 contract="" repair_tpl="" label="turn"
   local model="${ULTRABLITZ_MODEL:-}" effort="${ULTRABLITZ_EFFORT:-}"
+  local v_round=0 v_last_id=0 v_confirm=0
   while [ $# -gt 0 ]; do
     case "$1" in
       --session) sd="$2"; shift 2 ;;
@@ -598,9 +796,20 @@ cmd_codex_turn() {
       --label) label="$2"; shift 2 ;;
       --model) model="$2"; shift 2 ;;
       --effort) effort="$2"; shift 2 ;;
+      --round) v_round="$2"; shift 2 ;;
+      --last-id) v_last_id="$2"; shift 2 ;;
+      --confirm-only) v_confirm=1; shift ;;
       *) echo "codex-turn: unknown arg $1" >&2; return 2 ;;
     esac
   done
+  # Validation options forwarded to validate-output (INV-SWEEP-1, INV-ADMIT-1).
+  ub_validate() {
+    if [ "$v_confirm" = 1 ]; then
+      cmd_validate_output --round "$v_round" --last-id "$v_last_id" --confirm-only "$@"
+    else
+      cmd_validate_output --round "$v_round" --last-id "$v_last_id" "$@"
+    fi
+  }
   [ -d "$sd" ] || { echo "codex-turn: session dir required" >&2; return 2; }
   [ -r "$pf" ] || { echo "codex-turn: prompt file unreadable" >&2; return 2; }
 
@@ -805,13 +1014,13 @@ cmd_codex_turn() {
   # FORMAT policy: one bounded repair turn on the same thread (INV-FORMAT-1).
   if [ -n "$contract" ]; then
     local vfile="$sd/$label.validation.json" verr="$sd/$label.validation.err"
-    if ! cmd_validate_output --contract "$contract" --input "$outfile" > "$vfile" 2>"$verr"; then
+    if ! ub_validate --contract "$contract" --input "$outfile" > "$vfile" 2>"$verr"; then
       ub_validation_gate "$vfile" "$verr" || return 1
       if [ -n "$repair_tpl" ] && [ -r "$repair_tpl" ]; then
         local pre="$sd/$label.pre-repair.md"
         mv -f "$outfile" "$pre"
         local repair_prompt="$sd/$label.repair-prompt.md"
-        ub_render_repair "$repair_tpl" "$contract" "$pre" > "$repair_prompt"
+        ub_render_repair "$repair_tpl" "$contract" "$pre" "$v_round" > "$repair_prompt"
         local rj rjob rres rraw rstatus rthread rcs
         rj="$(ub_launch resume "$repair_prompt")"
         if printf '%s' "$rj" | jq -e .jobId >/dev/null 2>&1; then
@@ -842,7 +1051,7 @@ cmd_codex_turn() {
             return 1
           fi
           printf '%s\n' "$rraw" > "$outfile"
-          if ! cmd_validate_output --contract "$contract" --input "$outfile" --baseline "$pre" > "$vfile" 2>"$verr"; then
+          if ! ub_validate --contract "$contract" --input "$outfile" --baseline "$pre" > "$vfile" 2>"$verr"; then
             ub_validation_gate "$vfile" "$verr" || return 1
             ub_turn_fail FORMAT "output still invalid after one repair turn: $(jq -r '.errors | join("; ")' "$vfile" 2>/dev/null)" "$jobid" "$attempts" true
             return 1
@@ -902,9 +1111,15 @@ ub_turn_fail() {
 # Only the body between the last pair of ``` fences is sent — the template's
 # own explanatory prose never reaches the model.
 ub_render_repair() {
-  local tpl="$1" contract="$2" offending="$3"
+  local tpl="$1" contract="$2" offending="$3" round="${4:-0}"
   local headers cats lines body
-  headers='## CATEGORY SCORES, ## CRITIQUES, ## STRENGTHS, ## VERDICT'
+  # The header list follows the round (INV-SWEEP-1 / INV-ADMIT-1); the template
+  # itself stays fixed with its three slots (INV-FORMAT-1).
+  case "$round" in
+    1) headers='## CATEGORY SCORES, ## EDGE CASE SWEEP, ## CRITIQUES, ## STRENGTHS, ## VERDICT' ;;
+    0|'') headers='## CATEGORY SCORES, ## CRITIQUES, ## STRENGTHS, ## VERDICT' ;;
+    *) headers='## CATEGORY SCORES, ## CRITIQUES, ## NOTES, ## STRENGTHS, ## VERDICT' ;;
+  esac
   cats="$(jq -r '.categories[] | "- \(.name): {0-\(.weight)}"' "$contract")"
   lines="$(head -c 4000 "$offending")"
   body="$(awk '/^```$/{n++; next} n==1{print}' "$tpl")"
@@ -1176,6 +1391,7 @@ case "$SUB" in
   session-read) cmd_session_read "$@" ;;
   session-write) cmd_session_write "$@" ;;
   validate-output) cmd_validate_output "$@" ;;
+  render-contract) cmd_render_contract "$@" ;;
   render-repair) cmd_render_repair "$@" ;;
   codex-turn) cmd_codex_turn "$@" ;;
   gate-arm) cmd_gate_arm "$@" ;;
@@ -1193,9 +1409,11 @@ ultrablitz-utils.sh: unknown subcommand
 Usage: ultrablitz-utils.sh <subcommand> [args]
   doctor [--json] | resolve-companion | resolve-model | repo-hash | state-dir
   session-new | session-read <dir> | session-write <dir> <json-patch>
-  validate-output --contract <f> --input <f> [--baseline <f>]
+  validate-output --contract <f> --input <f> [--baseline <f>] [--round N] [--last-id N] [--confirm-only]
+  render-contract --contract <f> --round N [--part contract|surface]
   codex-turn --session <dir> --prompt-file <f> [--resume] [--timeout-ms N]
              [--contract <f>] [--repair-template <f>] [--label L]
+             [--round N] [--last-id N] [--confirm-only]
   gate-arm <runId> | gate-confirm | gate-status | gate-clear
   run-lock <runId> [--force-new] | run-unlock
   cleanup-completed | cleanup-list | trash-session <session-dir>

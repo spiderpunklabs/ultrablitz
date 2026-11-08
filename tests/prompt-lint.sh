@@ -11,7 +11,7 @@
 . "$(dirname "$0")/lib.sh"
 
 # The one and only table of legal placeholder slots. Add here deliberately.
-KNOWN_SLOTS="EXPECTED_HEADERS CATEGORY_LIST OFFENDING_OUTPUT PLAN_TEXT PLAN_SUMMARY FRAMEWORK_PROPOSAL FRAMEWORK_CONTRACT DEBATE_PROTOCOL OUTPUT_CONTRACT CATEGORIES ROUND_CONTEXT INCLUDE_DIG_DEEPER INCLUDE_REBUTTAL_RULES"
+KNOWN_SLOTS="EXPECTED_HEADERS CATEGORY_LIST OFFENDING_OUTPUT PLAN_TEXT PLAN_SUMMARY FRAMEWORK_PROPOSAL FRAMEWORK_CONTRACT DEBATE_PROTOCOL ATTACK_SURFACE OUTPUT_CONTRACT CATEGORIES ROUND_CONTEXT INCLUDE_DIG_DEEPER INCLUDE_REBUTTAL_RULES"
 
 # Slots are UPPER_SNAKE tokens in braces. Mixed-case braces ({Category}) are
 # prose examples inside templates, not interpolation slots.
@@ -88,7 +88,7 @@ assert_contains "$RENDERED" "- Gate & safety integrity: {0-20}"
 # the template's own shape-specification lines (the literal "- Evidence: ..."
 # sub-field spec, which names the fields without carrying critique content),
 # none of them may appear anywhere in the rendered prompt.
-STRIPPED="$(printf '%s\n' "$RENDERED" | grep -vE '^[[:space:]]*-[[:space:]]*(Evidence|Impact|Suggestion):[[:space:]]*\.\.\.[[:space:]]*$')"
+STRIPPED="$(printf '%s\n' "$RENDERED" | grep -vE '^[[:space:]]*-[[:space:]]*(Category|Evidence|Impact|Suggestion):[[:space:]]*\.\.\.[[:space:]]*$')"
 for tok in "Evidence:" "Impact:" "Suggestion:" "[CRITICAL]" "[MAJOR]" "[MINOR]"; do
   t "rendered repair prompt carries no critique vocabulary: $tok"
   assert_not_contains "$STRIPPED" "$tok"
@@ -122,6 +122,54 @@ for f in initial-scoring.md rebuttal-scoring.md framework-proposal.md framework-
 done
 t "scoring-prompt.md carries the OUTPUT_CONTRACT slot"
 grep -q -F '{OUTPUT_CONTRACT}' "$PROMPTS_DIR/scoring-prompt.md" && _ok || _no "missing {OUTPUT_CONTRACT}"
+
+# --- (e2) attack surface is domain-specific, not generic (INV-SURFACE-1) -------
+t "scoring-prompt.md carries the ATTACK_SURFACE slot (INV-SURFACE-1)"
+grep -q -F '{ATTACK_SURFACE}' "$PROMPTS_DIR/scoring-prompt.md" && _ok || _no "missing {ATTACK_SURFACE}"
+t "debate-protocol.md no longer carries the generic <attack_surface> block"
+grep -q -F '<attack_surface>' "$UB_ROOT/references/debate-protocol.md" && _no "generic block still present; the surface comes from framework.json" || _ok
+t "the Phase 1 contract negotiates the attack surface"
+grep -q -F '## ATTACK SURFACE:' "$CONTRACT_DOC" && _ok || _no "Phase 1 contract has no ATTACK SURFACE section"
+
+# --- (e3) Phase 2 contract is rendered, not hand-typed (INV-A9) ---------------
+for m in 'Phase 2 contract — base template' 'Phase 2 — round 1 fragment' 'Phase 2 — rounds 2+ fragment'; do
+  t "output-contract.md carries the marker '$m' exactly once"
+  n="$(grep -c -F "$m" "$CONTRACT_DOC")" || true
+  assert_eq "$n" "1"
+done
+FIX="$UB_ROOT/tests/fixtures/framework.json"
+for r in 1 2; do
+  t "render-contract --round $r renders with no unsubstituted {SLOT} tokens"
+  R="$(bash "$UTILS" render-contract --contract "$FIX" --round "$r" 2>&1)"; rc=$?
+  left="$(printf '%s\n' "$R" | grep -oE "$SLOT_RE" | sort -u | tr '\n' ' ')"
+  [ "$rc" = 0 ] && [ -z "$left" ] && _ok || _no "rc=$rc leftover=$left"
+done
+t "rendered round-1 contract carries the sweep and every class (INV-SWEEP-1)"
+R1="$(bash "$UTILS" render-contract --contract "$FIX" --round 1)"
+miss=""
+for c in empty-or-none scale concurrency partial-failure-and-rollback permissions-and-identity time-and-ordering external-dependency-down human-misuse migration-and-compat; do
+  printf '%s\n' "$R1" | grep -q -E "^- $c: COVERED" || miss="$miss $c"
+done
+printf '%s\n' "$R1" | grep -q -F '## EDGE CASE SWEEP' && [ -z "$miss" ] && _ok || _no "missing:$miss"
+t "rendered round-1 contract carries no admissibility rules"
+assert_not_contains "$R1" "Triggered-by"
+t "rendered round-2 contract carries the admissibility rules and no sweep (INV-ADMIT-1)"
+R2="$(bash "$UTILS" render-contract --contract "$FIX" --round 2)"
+printf '%s\n' "$R2" | grep -q -F 'Triggered-by' && ! printf '%s\n' "$R2" | grep -q -F '## EDGE CASE SWEEP' && _ok || _no "round 2 contract wrong"
+t "rendered contract lists the framework categories with bounds"
+assert_contains "$R2" "- Gate & safety integrity: {0-20}"
+t "rendered contract demands UB-n ids and a Category line (INV-ID-1)"
+printf '%s\n' "$R2" | grep -q -F 'UB-{n} **[CRITICAL|MAJOR|MINOR]**' && printf '%s\n' "$R2" | grep -q -F -e '- Category:' && _ok || _no "id/category spec missing"
+t "render-contract --part surface prints the locked attack surface (INV-SURFACE-1)"
+S="$(bash "$UTILS" render-contract --contract "$FIX" --part surface)"
+assert_eq "$(printf '%s\n' "$S" | grep -c '^- ')" "3"
+t "render-contract --part surface falls back to the generic line without attackSurface"
+jq 'del(.attackSurface)' "$FIX" > "$SANDBOX/generic.json"
+S="$(bash "$UTILS" render-contract --contract "$SANDBOX/generic.json" --part surface)"
+assert_contains "$S" "generic attack surface"
+t "render-contract refuses a missing round"
+bash "$UTILS" render-contract --contract "$FIX" >/dev/null 2>&1; rc=$?
+assert_rc "$rc" 2
 
 t "output-contract.md carries the Phase 1 contract marker exactly once"
 marker_count="$(grep -c -F "$CONTRACT_MARKER" "$CONTRACT_DOC")" || true

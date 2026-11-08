@@ -74,9 +74,9 @@ A finding the user resolved (via the termination batch of INV-ESC-1 or any
 other user-mediated path) may be re-raised only if the new critique cites specific
 plan text that was added or modified AFTER the round in which the user
 resolved it. Claude checks mechanically: does the critique reference a plan
-diff from a later round? If yes, the re-raise is allowed under a fresh linked
-ID (e.g. UB-7b). If no, the re-raise is rejected automatically — no debate, no
-ledger change.
+diff from a later round? If yes, the re-raise is allowed under a fresh id (the
+next UB-n per INV-ID-1, recorded in the ledger as linked to the original). If
+no, the re-raise is rejected automatically — no debate, no ledger change.
 
 ### INV-LEDGER-3 — Pure recycling is refused
 
@@ -85,6 +85,20 @@ relevant plan change since its resolution is refused, and the critique keeps
 its RESOLVED status — no debate, no ledger change. A re-raise that does carry
 new evidence, or an argument that the fix was inadequate, moves the critique
 to REGRESSED per INV-LEDGER-1.
+
+### INV-ID-1 — Stable critique identity
+
+Every critique carries a run-unique id `UB-n`, assigned by Codex when it first
+raises the finding by continuing from the highest id in play. Ids are never
+reused and never renumbered — a RESOLVED finding keeps its id for the rest of
+the run. Every entry names exactly one `Category:` spelled as in the locked
+framework and one of the three severities defined in the output contract
+(CRITICAL: the plan fails its goal or causes irreversible harm; MAJOR: a
+material defect with a workaround that must be fixed before execution; MINOR:
+a real but contained weakness). `validate-output` fails a turn whose critiques
+lack an id, repeat an id, break the new-id sequence, or name a category outside
+the framework; a failure is a FORMAT failure (INV-FAIL-1). The ledger, round
+cards, rebuttals and final summary refer to findings by this id only.
 
 ## Anti-Gaming
 
@@ -110,6 +124,19 @@ position, Claude's position, and the round history, and the user rules on each
 ledger as user-resolved and are then protected by the re-raise gate of
 INV-LEDGER-2. The debate does not resume after the batch; the refined plan is
 updated with the rulings and the run proceeds to the gate.
+
+### INV-ESC-2 — NEEDS_USER is a parked disposition, batched with the rest
+
+Claude may mark a critique NEEDS_USER when its resolution turns on a decision
+only the user can make — product scope, budget, risk appetite, or a choice
+between two designs that the plan's stated goals do not settle. The entry keeps
+its INV-LEDGER-1 state and gains `needsUser:true`: it is **parked**. Claude does
+not rebut it further, Codex is told to hold its position and its score on it,
+and the parked entry counts as unresolved for termination (INV-TERM-1). Parked
+entries are never asked about mid-debate; they go to the user with the
+INV-ESC-1 batch in ONE AskUserQuestion at termination. When every entry that is
+not RESOLVED is parked, the run terminates at once by stalemate (INV-TERM-5)
+rather than spend rounds re-arguing a question only the user can answer.
 
 ## Termination
 
@@ -140,6 +167,69 @@ Consensus, whatever its score or ledger state. Its only terminal states are
 `DEGRADED COMPLETE — <reason>` and `ADVISORY COMPLETE`, and every artifact
 persisted from such a run carries `authoritative:false` so downstream
 consumers cannot mistake it for a consensus result.
+
+### INV-TERM-4 — Confirm-only final turn
+
+When, after Claude's rebuttal, every CRITICAL and MAJOR ledger entry is
+RESOLVED and none is REGRESSED, the next Codex turn is a **confirmation turn**:
+`codex-turn --confirm-only` with the confirmation `{ROUND_CONTEXT}`. Codex
+confirms each resolution against the current plan text or REGRESSES it with
+evidence, rules on any open MINOR entries, and re-scores. On that turn only a
+CRITICAL new finding carrying `Triggered-by` or `Missed-because` is admitted
+(INV-ADMIT-1); every other new finding is noted. A confirmation turn that
+validates with zero REGRESSED entries, zero admitted new findings and
+INV-TERM-2 satisfied ends the run by Consensus; otherwise the debate continues
+with normal rounds and becomes confirm-only again only when the condition holds
+again.
+
+### INV-TERM-5 — Stalemate is ledger-based
+
+Stalemate is declared when two consecutive authoritative rounds (INV-ROUND-1)
+end with no ledger status change (INV-LEDGER-1) and no admitted new finding
+(INV-ADMIT-1), or at once when every entry that is not RESOLVED is parked
+(INV-ESC-2). Score movement alone neither causes nor prevents stalemate, and a
+round whose only change is in `## NOTES` is not progress. Stalemate is checked
+from round 3 on, before the soft target as well as after it, and terminates
+through the INV-ESC-1 batch.
+
+## Review Coverage
+
+### INV-SURFACE-1 — The attack surface is locked in Phase 1
+
+The domain attack surface — 3 to 8 concrete, one-line failure classes specific
+to THIS plan — is proposed by Claude, negotiated in Phase 1 under the `##
+ATTACK SURFACE` section of the framework contract, and locked into
+`framework.json` as `attackSurface[]` together with the categories and the
+max. Every Phase 2 prompt carries it through the `{ATTACK_SURFACE}` slot
+(rendered by `render-contract --part surface`); the generic failure classes are
+listed after it and never replace it. It is immutable during Phase 2. A
+`--skip-framework` run with no configured list renders the generic fallback
+line and the run is labelled GENERIC.
+
+### INV-SWEEP-1 — Round 1 sweeps the fixed edge-case classes
+
+The round 1 scoring response carries a `## EDGE CASE SWEEP` section with
+exactly one line per fixed class (`UB_SWEEP_CLASSES` in
+`hooks/ultrablitz-utils.sh`: empty-or-none, scale, concurrency,
+partial-failure-and-rollback, permissions-and-identity, time-and-ordering,
+external-dependency-down, human-misuse, migration-and-compat), each marked
+COVERED, UNCOVERED or N-A. An UNCOVERED line must name the `UB-n` critique
+raised for it. `validate-output --round 1` fails the turn when the section, a
+class, or an UNCOVERED line's critique reference is missing (a FORMAT failure,
+INV-FAIL-1). The sweep result is shown in the round 1 card and persisted with
+the round.
+
+### INV-ADMIT-1 — Admissibility of new findings after round 1
+
+From round 2 on, a finding whose id is above the highest id in play is
+**admitted** to the ledger only if it carries `Triggered-by: UB-m` (the change
+made for UB-m created or exposed it) or, for a CRITICAL or MAJOR finding,
+`Missed-because:` (what round 1 could not see). Any other new finding is
+**noted**: `validate-output` reports it under `admissibility.noted`, it is
+shown in the round card and the final summary under "Noted (not debated)", it
+never enters the ledger and it never blocks termination. Codex is told to place
+such observations under `## NOTES` without an id. Admissibility is a
+classification, never a validation failure.
 
 ## Continuity
 

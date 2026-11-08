@@ -10,10 +10,20 @@ Assemble by interpolating:
   assumption, and risk." R2+: "The plan author has responded to your
   critiques with a rebuttal and updated plan below. Re-score the plan in
   its CURRENT state using the agreed framework."
+  Confirmation turn (INV-TERM-4, `codex-turn --confirm-only`): "Every
+  CRITICAL and MAJOR finding is now RESOLVED. Confirm each resolution against
+  the current plan text or REGRESS it with evidence, rule on any open MINOR
+  findings, and re-score. Only a CRITICAL new finding with Triggered-by or
+  Missed-because is admitted this round."
 - `{PLAN_TEXT}` — R1: the full plan. R2+: omit (Codex retains via
   `--resume-last`); pass Claude's rebuttal text + revised plan instead.
 - `{DEBATE_PROTOCOL}` — tone blocks from `references/debate-protocol.md`.
-- `{OUTPUT_CONTRACT}` — dynamic contract generated from the agreed framework.
+- `{ATTACK_SURFACE}` — the bullet list locked in Phase 1 (INV-SURFACE-1),
+  printed by `render-contract --contract "$SD/framework.json" --part surface`.
+- `{OUTPUT_CONTRACT}` — the contract for this round, printed by
+  `render-contract --contract "$SD/framework.json" --round N` (round 1 carries
+  the edge-case sweep, INV-SWEEP-1; rounds 2+ the admissibility rules,
+  INV-ADMIT-1). Never hand-typed.
 - `{INCLUDE_DIG_DEEPER}` — R1 only: include `<dig_deeper_nudge>` block. R2+:
   omit (Codex has already done first-pass digging).
 - `{INCLUDE_REBUTTAL_RULES}` — R2+ only: include the rebuttal scoring
@@ -26,7 +36,9 @@ Write to:
 - R2+: `<session>/p2-r<N>-rebuttal.md` (when content >= 500 chars; otherwise
   pass directly as the positional `task --resume-last "..."` argument).
 
-Always `.md`. Run `validate-session <runId>` immediately before the Codex call.
+Always `.md`. Send with `codex-turn --round N --last-id <highest UB id in
+play>` (plus `--confirm-only` on a confirmation turn) so validation applies the
+right round rules.
 
 ```xml
 <task>
@@ -44,6 +56,15 @@ THE PLAN TO SCORE (or, on R2+, the updated plan and the author's rebuttal):
 </task>
 
 {DEBATE_PROTOCOL}
+
+<attack_surface>
+Probe these failure classes first — they were locked for this domain in Phase 1:
+{ATTACK_SURFACE}
+Then the generic classes: feasibility and timeline realism, unstated
+assumptions and implicit dependencies, scale and load, rollback and
+contingency, security and compliance, degraded and empty states, single
+points of failure, observability gaps that would hide failure.
+</attack_surface>
 
 <structured_output_contract>
 {OUTPUT_CONTRACT}

@@ -90,7 +90,7 @@ done
 # --- check 4: the full required invariant set is defined ----------------------
 REQUIRED="INV-SCORE-1 INV-SCORE-2 INV-CAP-1 INV-CAP-2 INV-LEDGER-1 INV-LEDGER-2 \
 INV-TERM-1 INV-TERM-2 INV-TERM-3 INV-CONT-1 INV-CONT-2 INV-FORMAT-1 INV-FAIL-1 \
-INV-ROUND-1 INV-A9 INV-BUDGET-1"
+INV-ROUND-1 INV-A9 INV-BUDGET-1 INV-ID-1 INV-SURFACE-1 INV-SWEEP-1 INV-ADMIT-1 INV-TERM-4 INV-TERM-5 INV-ESC-2"
 for id in $REQUIRED; do
   t "check 4: required invariant $id is defined"
   case "$defined_sp" in

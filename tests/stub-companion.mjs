@@ -46,7 +46,7 @@ const validBody = (scores = [24, 18, 19, 15, 18], nCrit = 1) => {
   const lines = names.map((n, i) => `- ${n}: ${scores[i]}`).join("\n");
   let crit = "";
   for (let i = 1; i <= nCrit; i++) {
-    crit += `${i}. **[MAJOR]** Stub finding ${i}\n   - Evidence: stub evidence ${i}\n   - Impact: stub impact ${i}\n   - Suggestion: stub suggestion ${i}\n`;
+    crit += `UB-${i} **[MAJOR]** Stub finding ${i}\n   - Category: Gate & safety integrity\n   - Evidence: stub evidence ${i}\n   - Impact: stub impact ${i}\n   - Suggestion: stub suggestion ${i}\n`;
   }
   if (nCrit === 0) crit = "- None.\n";
   return `## CATEGORY SCORES:\n${lines}\n\n## CRITIQUES:\n${crit}\n## STRENGTHS:\n- Stub strength.\n\n## VERDICT:\nStub verdict paragraph.`;
@@ -110,7 +110,7 @@ function turnResult(state, reqModel) {
         status: 0,
         rawOutput:
           n === 1
-            ? `## CATEGORY SCORES:\n- Runtime contract fidelity & execution robustness: 10\n- Gate & safety integrity: 10\n- Verifiability & regression resistance: 10\n- Protocol coherence & drift resistance: 10\n- Operability & maintenance economics: 10\n\n## CRITIQUES:\n1. **[MAJOR]** Stub finding 1\n   - Evidence: e\n   - Impact: i\n`
+            ? `## CATEGORY SCORES:\n- Runtime contract fidelity & execution robustness: 10\n- Gate & safety integrity: 10\n- Verifiability & regression resistance: 10\n- Protocol coherence & drift resistance: 10\n- Operability & maintenance economics: 10\n\n## CRITIQUES:\nUB-1 **[MAJOR]** Stub finding 1\n   - Category: Gate & safety integrity\n   - Evidence: e\n   - Impact: i\n`
             : validBody([24, 18, 19, 15, 18], 1),
         threadId: THREAD,
         sessionId: SESSION,

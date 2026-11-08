@@ -59,6 +59,10 @@ t "session-new records authoritative:true"
 assert_json "$js" '.authoritative' 'true'
 t "session-new starts not completed"
 assert_json "$js" '.completed' 'false'
+t "session-new starts the critique id sequence at 0 (INV-ID-1)"
+assert_json "$js" '.lastCritiqueId' '0'
+t "session-new starts the stalemate counter at 0 (INV-TERM-5)"
+assert_json "$js" '.ledgerUnchangedRounds' '0'
 t "session dir is mode 700"
 mode="$(stat -f '%Lp' "$SD" 2>/dev/null || stat -c '%a' "$SD")"
 assert_eq "$mode" "700"
