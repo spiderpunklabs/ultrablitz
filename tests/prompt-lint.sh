@@ -170,6 +170,25 @@ assert_contains "$S" "generic attack surface"
 t "render-contract refuses a missing round"
 bash "$UTILS" render-contract --contract "$FIX" >/dev/null 2>&1; rc=$?
 assert_rc "$rc" 2
+t "render-contract refuses round 0"
+bash "$UTILS" render-contract --contract "$FIX" --round 0 >/dev/null 2>&1; rc=$?
+assert_rc "$rc" 2
+t "render-contract refuses a non-string attackSurface entry"
+jq '.attackSurface += [42]' "$FIX" > "$SANDBOX/badsurface.json"
+bash "$UTILS" render-contract --contract "$SANDBOX/badsurface.json" --part surface >/dev/null 2>&1; rc=$?
+assert_rc "$rc" 2
+t "render-contract --doc fails loudly when a fragment block is missing"
+grep -v -F 'Phase 2 — round 1 fragment' "$CONTRACT_DOC" > "$SANDBOX/nofrag.md"
+bash "$UTILS" render-contract --contract "$FIX" --round 1 --doc "$SANDBOX/nofrag.md" >/dev/null 2>&1; rc=$?
+assert_rc "$rc" 2
+t "render-contract --doc renders from the given template"
+sed 's/Return your response in EXACTLY this format/Return your response in THIS DOC format/' "$CONTRACT_DOC" > "$SANDBOX/altdoc.md"
+R="$(bash "$UTILS" render-contract --contract "$FIX" --round 2 --doc "$SANDBOX/altdoc.md")"
+assert_contains "$R" "THIS DOC format"
+t "rendered round 1 keeps a blank line before ## CRITIQUES"
+printf '%s\n' "$R1" | grep -B1 '^## CRITIQUES:' | head -1 | grep -q '^$' && _ok || _no "no blank line before CRITIQUES"
+t "rendered round 2 keeps a blank line before ## STRENGTHS"
+printf '%s\n' "$R2" | grep -B1 '^## STRENGTHS:' | head -1 | grep -q '^$' && _ok || _no "no blank line before STRENGTHS"
 
 t "output-contract.md carries the Phase 1 contract marker exactly once"
 marker_count="$(grep -c -F "$CONTRACT_MARKER" "$CONTRACT_DOC")" || true

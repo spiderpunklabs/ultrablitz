@@ -48,9 +48,15 @@ tail_txt='## STRENGTHS:
 ## VERDICT:
 Ship it.'
 
+notes_none='## NOTES:
+- None.
+
+'
 # compose [--sweep TEXT] [--crit1 TEXT] [--crit2 TEXT] [--notes TEXT]
+# A "- None." NOTES block is included by default (required on rounds 2+,
+# harmless on round 1); --notes replaces it.
 compose() {
-  local sweep="" c1="$crit1" c2="" notes=""
+  local sweep="" c1="$crit1" c2="" notes="$notes_none"
   while [ $# -gt 0 ]; do
     case "$1" in
       --sweep) sweep="$2"; shift 2 ;;
@@ -329,5 +335,185 @@ printf '%s\n' "${good/UB-1 \*\*\[MAJOR\]\*\*/1. **[MAJOR]**}" > "$SANDBOX/base.m
 printf '%s\n' "$good" > "$SANDBOX/out.md"
 v --baseline "$SANDBOX/base.md" >/dev/null; rc=$?
 assert_rc "$rc" 0
+
+# --- No silent drops: tolerated header variants (INV-ID-1) ------------------
+for hdr in '- UB-1 **[MAJOR]** Something' 'UB-1 [MAJOR] Something' '**UB-1 [MAJOR]** Something' \
+           'UB-1 **[Major]** Something' '### UB-1 **[MAJOR]** Something' '2) UB-1: [MAJOR] Something'; do
+  t "header variant is parsed, not dropped: $hdr"
+  mk "$(compose --crit1 "$hdr
+   - Category: Gate & safety integrity
+   - Evidence: e
+   - Impact: i
+   - Suggestion: s
+")"
+  out="$(v)"; rc=$?
+  assert_json "$out" '"\(.ok) \(.critiqueCount) \(.critiques[0].id) \(.critiques[0].severity)"' 'true 1 UB-1 MAJOR'
+done
+
+t "a ### CRITIQUES heading still opens the section"
+mk "$(compose | sed 's/^## CRITIQUES:/### CRITIQUES:/')"
+out="$(v)"
+assert_json "$out" '"\(.ok) \(.critiqueCount)"' 'true 1'
+
+t "sweep rows tolerate bold class names and lower-case status"
+mk "$(compose --sweep "$(printf '%s\n' "$sweep_txt" | sed 's/^- concurrency: UNCOVERED/- **Concurrency**: uncovered/')
+")"
+out="$(v --round 1)"
+assert_json "$out" '"\(.ok) \(.sweep.uncovered | join(","))"' 'true concurrency'
+
+# --- No silent drops: what still cannot parse is reported -------------------
+t "a header with an id but no bracketed severity fails"
+mk "$(compose --crit1 'UB-1 MAJOR Something
+   - Category: Gate & safety integrity
+   - Evidence: e
+   - Impact: i
+   - Suggestion: s
+')"
+out="$(v)"; rc=$?
+assert_rc "$rc" 1
+t "the malformed header is named"
+assert_contains "$out" "not in the form UB-n **[SEVERITY]** summary"
+
+t "field lines with no header fail instead of vanishing"
+mk "$(compose --crit1 '   - Category: Gate & safety integrity
+   - Evidence: e
+   - Impact: i
+   - Suggestion: s
+')"
+out="$(v)"; rc=$?
+assert_rc "$rc" 1
+t "orphan fields are named"
+assert_contains "$out" "outside any entry"
+
+t "a second entry whose header is unrecognised is not merged into the first"
+mk "$(compose --crit2 'A second finding with no id
+   - Category: Gate & safety integrity
+   - Missed-because: round 1 could not see it
+   - Evidence: e
+   - Impact: i
+   - Suggestion: s
+')"
+out="$(v --round 2 --last-id 1)"; rc=$?
+assert_rc "$rc" 1
+t "the repeated fields are reported"
+assert_contains "$out" "repeated within one"
+
+t "an empty CRITIQUES section without '- None.' fails"
+mk "$(compose --crit1 '')"
+out="$(v)"; rc=$?
+assert_rc "$rc" 1
+t "the empty section is named"
+assert_contains "$out" "no entry and no"
+t "an explicit '- None.' passes"
+mk "$(compose --crit1 '- None.
+')"
+out="$(v)"; rc=$?
+assert_rc "$rc" 0
+
+t "a numbered list inside a field is not counted as entries"
+mk "$(compose --crit1 'UB-1 **[MAJOR]** Something
+   - Category: Gate & safety integrity
+   - Evidence: e
+   - Impact: i
+   - Suggestion: do these:
+     1. step one
+     2. step two
+')"
+out="$(v)"; rc=$?
+assert_json "$out" '"\(.ok) \(.critiqueCount)"' 'true 1'
+
+# --- References must point at something --------------------------------------
+t "an UNCOVERED row naming a critique absent from the response fails"
+mk "$(compose --sweep "$(printf '%s\n' "$sweep_txt" | sed 's/see UB-1/see UB-9/')
+")"
+out="$(v --round 1)"; rc=$?
+assert_rc "$rc" 1
+t "the dangling reference is named"
+assert_contains "$out" "UB-9"
+
+t "Triggered-by with no id is noted, not admitted"
+add_new "Triggered-by:" MAJOR
+out="$(v --round 2 --last-id 1)"
+assert_json "$out" '.admissibility.noted[0].reason' 'Triggered-by names no critique in play (must be UB-1..UB-1)'
+t "Triggered-by naming a finding not in play is noted"
+add_new "Triggered-by: UB-77" MAJOR
+out="$(v --round 2 --last-id 1)"
+assert_json "$out" '.admissibility.admitted | length' '0'
+t "an empty Missed-because is noted"
+add_new "Missed-because:" CRITICAL
+out="$(v --round 2 --last-id 1)"
+assert_json "$out" '.admissibility.noted[0].reason' 'Missed-because is empty'
+
+# --- Round-2 shape and flag sanity -------------------------------------------
+t "round 2 without ## NOTES fails"
+mk "$(compose --notes '')"
+out="$(v --round 2 --last-id 1)"; rc=$?
+assert_rc "$rc" 1
+t "the missing NOTES header is named"
+assert_contains "$out" "## NOTES"
+
+t "--last-id 0 after round 1 is a warning"
+mk "$good"
+out="$(v --round 2 --last-id 0)"
+assert_json "$out" '.warnings | length' '1'
+t "round 1 carries no warning"
+mk "$(compose --sweep "$sweep_txt
+")"
+out="$(v --round 1)"
+assert_json "$out" '.warnings | length' '0'
+
+t "--confirm-only on round 1 is refused"
+v --round 1 --confirm-only >/dev/null 2>&1; rc=$?
+assert_rc "$rc" 2
+t "an empty --round is a usage error, not an internal jq failure"
+err="$(v --round '' 2>&1 >/dev/null)"; rc=$?
+assert_rc "$rc" 2
+t "the usage error says integers"
+assert_contains "$err" "take integers"
+
+t "a category name with a tab is refused as a contract"
+jq '.categories[0].name = "Bad\tname"' "$C" > "$SANDBOX/tab.json"
+bash "$UTILS" validate-output --contract "$SANDBOX/tab.json" --input "$SANDBOX/out.md" >/dev/null 2>&1; rc=$?
+assert_rc "$rc" 2
+
+# --- Repair keeps identity; round 1 may add owed critiques -------------------
+t "a repair that changes a critique's severity is rejected"
+printf '%s\n' "$good" > "$SANDBOX/base.md"
+printf '%s\n' "${good/\[MAJOR\]/[MINOR]}" > "$SANDBOX/out.md"
+out="$(v --baseline "$SANDBOX/base.md")"; rc=$?
+assert_rc "$rc" 1
+t "the severity change is named"
+assert_contains "$out" "changed severity of UB-1"
+
+t "a repair that changes a critique's Category is rejected"
+printf '%s\n' "${good/Category: Gate & safety integrity/Category: Operability & maintenance economics}" > "$SANDBOX/out.md"
+out="$(v --baseline "$SANDBOX/base.md")"; rc=$?
+assert_rc "$rc" 1
+t "the Category change is named"
+assert_contains "$out" "changed Category of UB-1"
+
+owed_sweep="$(printf '%s\n' "$sweep_txt" | sed 's/UNCOVERED — see UB-1/UNCOVERED — no plan text/')"
+fixed_sweep="$(printf '%s\n' "$sweep_txt" | sed 's/see UB-1/see UB-2/')"
+crit2_major='UB-2 **[MAJOR]** Concurrency gap
+   - Category: Gate & safety integrity
+   - Evidence: e
+   - Impact: i
+   - Suggestion: s
+'
+t "round 1: a repair may add the critique an UNCOVERED row owed"
+compose --sweep "$owed_sweep
+" > "$SANDBOX/base.md"
+mk "$(compose --sweep "$fixed_sweep
+" --crit2 "$crit2_major")"
+out="$(v --round 1 --baseline "$SANDBOX/base.md")"; rc=$?
+assert_rc "$rc" 0
+t "round 1: adding more critiques than were owed is still rejected"
+mk "$(compose --sweep "$fixed_sweep
+" --crit2 "$crit2_major$(printf '%s' "$crit2_major" | sed 's/UB-2/UB-3/')
+")"
+out="$(v --round 1 --baseline "$SANDBOX/base.md")"; rc=$?
+assert_rc "$rc" 1
+t "the allowance is stated in the error"
+assert_contains "$out" "at most 1 may be added"
 
 finish

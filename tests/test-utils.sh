@@ -63,6 +63,11 @@ t "session-new starts the critique id sequence at 0 (INV-ID-1)"
 assert_json "$js" '.lastCritiqueId' '0'
 t "session-new starts the stalemate counter at 0 (INV-TERM-5)"
 assert_json "$js" '.ledgerUnchangedRounds' '0'
+t "session-write persists lastCritiqueId and ledgerUnchangedRounds"
+bash "$UTILS" session-write "$SD" '{"lastCritiqueId":7,"ledgerUnchangedRounds":1}' >/dev/null
+assert_json "$(cat "$SD/session.json")" '"\(.lastCritiqueId) \(.ledgerUnchangedRounds)"' '7 1'
+t "session-write leaves the rest of the session intact"
+assert_json "$(cat "$SD/session.json")" '.authoritative' 'true'
 t "session dir is mode 700"
 mode="$(stat -f '%Lp' "$SD" 2>/dev/null || stat -c '%a' "$SD")"
 assert_eq "$mode" "700"

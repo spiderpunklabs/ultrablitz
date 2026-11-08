@@ -13,6 +13,26 @@ The debate protocol gains identity, scope and a stopping rule. v6's
 executable subcommands are integrated onto the current main line; v7 makes
 what they validate precise.
 
+### Upgrade notes
+
+- **State moved out of `/tmp`.** Sessions now live in the per-user state
+  directory and the gate lock in `$TMPDIR/ultrablitz-<uid>/`. An installed copy
+  is a symlink to the checkout, so pulling switches over at once: an armed
+  pre-7 gate lock becomes invisible to the new hook and pre-7 sessions are not
+  listed by `cleanup-list`. Finish or abandon any run in flight first, then
+  move the old files to the Trash:
+  `/tmp/ultrablitz-gate-*.lock` and `/tmp/ultrablitz-*/`.
+- **Permission allowlists need the new subcommand names.** Each turn calls
+  `hooks/ultrablitz-utils.sh` with one of: `doctor`, `session-new`,
+  `session-read`, `session-write`, `resolve-model`, `run-lock`, `run-unlock`,
+  `codex-turn`, `validate-output`, `render-contract`, `gate-arm`,
+  `gate-status`, `gate-confirm`, `gate-clear`, `cleanup-list`,
+  `cleanup-completed`, `trash-session`. An allowlist written for 6.x
+  (`cleanup-interactive`, `mkdir -m 700 /tmp/ultrablitz-*`,
+  `touch /tmp/ultrablitz-*/completed`) prompts on every turn until updated.
+- Re-run `install.sh --register` after pulling so the gate hook entry points at
+  the current script.
+
 ### Added
 
 - **Stable critique identity (INV-ID-1).** Every finding is `UB-n`, assigned by
@@ -49,9 +69,21 @@ what they validate precise.
 - **`render-contract` subcommand.** Prints the per-round `{OUTPUT_CONTRACT}`
   from the single template in output-contract.md and the `{ATTACK_SURFACE}`
   list from framework.json, so neither is ever hand-typed (INV-A9).
-- `codex-turn --round N --last-id N [--confirm-only]`, forwarded to
-  validation; `validate-output` reports `critiques[]`, `lastId`, `newIds`,
-  `admissibility{admitted,noted}` and `sweep`.
+- `codex-turn --round N --last-id N [--confirm-only]`, checked before any
+  Codex call is spent and forwarded to validation; `validate-output` reports
+  `critiques[]`, `lastId`, `newIds`, `admissibility{admitted,noted}`, `sweep`
+  and `warnings` (e.g. `--last-id 0` after round 1).
+- **No finding is dropped silently.** The critique scanner tolerates the
+  common header variants (bullet or number prefix, bold anywhere, any case,
+  `###` section headings) and fails the turn on anything it still cannot
+  parse: a line with a UB id or severity tag that is not a header, field lines
+  outside an entry or repeated within one, or an empty CRITIQUES section
+  without `- None.`.
+- `## NOTES` is required on rounds 2+. `Triggered-by` must name a finding in
+  play and `Missed-because` must carry text, or the finding is noted. An
+  UNCOVERED sweep row must name a critique present in the same response.
+- A format repair must also keep every critique's id, severity and Category;
+  on round 1 it may add the critiques an UNCOVERED sweep row owed.
 
 ### Changed
 

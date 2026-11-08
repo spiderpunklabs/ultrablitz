@@ -280,6 +280,53 @@ assert_json "$(cat "$SD/session.json")" '.modelSelectionUnknown.from' 'gpt-6-ast
 t "unknown-shape 400: the run continues on the probed model"
 assert_json "$out" '.model' 'gpt-5.3-codex-spark'
 
+# --- v7 round flags reach validation (INV-SWEEP-1, INV-ADMIT-1, INV-TERM-4) ---
+SD="$(new_session)"
+t "codex-turn rejects a non-integer --last-id before launching anything"
+STUB_SCENARIO=happy STUB_STATE="$SD/stub-state.json" bash "$UTILS" codex-turn --session "$SD" \
+  --prompt-file "$SD/prompt.md" --contract "$C" --round 2 --last-id null >/dev/null 2>&1; rc=$?
+assert_rc "$rc" 2
+t "no Codex call was spent on the bad flag"
+[ -f "$SD/stub-state.json" ] && _no "stub was launched" || _ok
+t "codex-turn rejects --confirm-only on round 1 before launching anything"
+STUB_SCENARIO=happy STUB_STATE="$SD/stub-state.json" bash "$UTILS" codex-turn --session "$SD" \
+  --prompt-file "$SD/prompt.md" --contract "$C" --round 1 --confirm-only >/dev/null 2>&1; rc=$?
+assert_rc "$rc" 2
+
+SD="$(new_session)"
+t "round 1: a response with a complete sweep validates through codex-turn"
+out="$(run_scenario round1-sweep "$SD" --round 1 --label p2-r1)"
+assert_json "$out" '.ok' 'true'
+t "round 1: the sweep reaches validation.json"
+assert_json "$(cat "$SD/p2-r1.validation.json")" '.sweep.uncovered | join(",")' 'concurrency'
+
+SD="$(new_session)"
+t "round 1: a response without a sweep is repaired once, then FORMAT"
+out="$(run_scenario happy "$SD" --round 1 --label p2-r1)"
+assert_json "$out" '.failureClass' 'FORMAT'
+t "round 1: the repair prompt lists the EDGE CASE SWEEP header"
+grep -q "## EDGE CASE SWEEP" "$SD/p2-r1.repair-prompt.md" && _ok || _no "sweep header missing from repair prompt"
+
+SD="$(new_session)"
+t "round 1: a repair may add the critique an UNCOVERED row owed (INV-FORMAT-1)"
+out="$(run_scenario round1-owed-repair "$SD" --round 1 --label p2-r1)"
+assert_json "$out" '.ok' 'true'
+t "round 1: the owed critique is in the ledger feed"
+assert_json "$(cat "$SD/p2-r1.validation.json")" '.lastId' '2'
+
+SD="$(new_session)"
+t "round 2: --round and --last-id reach admissibility"
+out="$(run_scenario round2-notes "$SD" --round 2 --last-id 1 --label p2-r2)"
+assert_json "$out" '.ok' 'true'
+t "round 2: Triggered-by admits UB-2, an unexplained MINOR UB-3 is noted"
+assert_json "$(cat "$SD/p2-r2.validation.json")" \
+  '"\(.admissibility.admitted | join(",")) / \(.admissibility.noted | map(.id) | join(","))"' 'UB-2 / UB-3'
+t "round 2: a response without ## NOTES fails validation"
+out="$(run_scenario happy "$SD" --round 2 --last-id 1 --label p2-r2b)"
+assert_json "$out" '.failureClass' 'FORMAT'
+t "round 2: the repair prompt lists the NOTES header"
+grep -q "## NOTES" "$SD/p2-r2b.repair-prompt.md" && _ok || _no "NOTES header missing from repair prompt"
+
 # --- validation artifact is a hard gate (plan A9 / defect S2) ------------------
 SD="$(new_session)"
 printf 'this is not a contract\n' > "$SD/bad-contract.json"

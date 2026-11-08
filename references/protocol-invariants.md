@@ -97,8 +97,12 @@ framework and one of the three severities defined in the output contract
 material defect with a workaround that must be fixed before execution; MINOR:
 a real but contained weakness). `validate-output` fails a turn whose critiques
 lack an id, repeat an id, break the new-id sequence, or name a category outside
-the framework; a failure is a FORMAT failure (INV-FAIL-1). The ledger, round
-cards, rebuttals and final summary refer to findings by this id only.
+the framework; a failure is a FORMAT failure (INV-FAIL-1). A line in the
+CRITIQUES section that carries a UB id or a severity tag but does not parse as
+an entry header, a field line outside any entry, a field repeated within one
+entry, and a CRITIQUES section with neither an entry nor `- None.` are
+failures too: no finding is ever dropped silently. The ledger, round cards,
+rebuttals and final summary refer to findings by this id only.
 
 ## Anti-Gaming
 
@@ -134,9 +138,11 @@ its INV-LEDGER-1 state and gains `needsUser:true`: it is **parked**. Claude does
 not rebut it further, Codex is told to hold its position and its score on it,
 and the parked entry counts as unresolved for termination (INV-TERM-1). Parked
 entries are never asked about mid-debate; they go to the user with the
-INV-ESC-1 batch in ONE AskUserQuestion at termination. When every entry that is
-not RESOLVED is parked, the run terminates at once by stalemate (INV-TERM-5)
-rather than spend rounds re-arguing a question only the user can answer.
+INV-ESC-1 batch in ONE AskUserQuestion at termination. When at least one entry
+is parked and every entry that is not RESOLVED is parked, the run terminates at
+once by stalemate (INV-TERM-5) rather than spend rounds re-arguing a question
+only the user can answer. A ledger with every entry RESOLVED is never a
+stalemate; it goes to the confirmation turn (INV-TERM-4).
 
 ## Termination
 
@@ -172,22 +178,26 @@ consumers cannot mistake it for a consensus result.
 
 When, after Claude's rebuttal, every CRITICAL and MAJOR ledger entry is
 RESOLVED and none is REGRESSED, the next Codex turn is a **confirmation turn**:
-`codex-turn --confirm-only` with the confirmation `{ROUND_CONTEXT}`. Codex
-confirms each resolution against the current plan text or REGRESSES it with
-evidence, rules on any open MINOR entries, and re-scores. On that turn only a
+`codex-turn --round N --confirm-only` (N >= 2; round 1 is never confirm-only)
+with the confirmation `{ROUND_CONTEXT}`. Codex confirms each RESOLVED entry
+against the current plan text or REGRESSES it with evidence, holds or drops
+each open MINOR entry against the changes in this rebuttal, and re-scores.
+Ledger states still change only as INV-LEDGER-1 says: Claude resolves an entry
+with a plan change, Codex can only regress or hold. On that turn only a
 CRITICAL new finding carrying `Triggered-by` or `Missed-because` is admitted
 (INV-ADMIT-1); every other new finding is noted. A confirmation turn that
 validates with zero REGRESSED entries, zero admitted new findings and
-INV-TERM-2 satisfied ends the run by Consensus; otherwise the debate continues
-with normal rounds and becomes confirm-only again only when the condition holds
-again.
+INV-TERM-2 satisfied (every MINOR included) ends the run by Consensus;
+otherwise the debate continues with normal rounds and becomes confirm-only
+again only when the condition holds again. Claude therefore resolves or parks
+every MINOR it can in the rebuttal that precedes a confirmation turn.
 
 ### INV-TERM-5 — Stalemate is ledger-based
 
 Stalemate is declared when two consecutive authoritative rounds (INV-ROUND-1)
 end with no ledger status change (INV-LEDGER-1) and no admitted new finding
-(INV-ADMIT-1), or at once when every entry that is not RESOLVED is parked
-(INV-ESC-2). Score movement alone neither causes nor prevents stalemate, and a
+(INV-ADMIT-1), or at once when at least one entry is parked and every entry
+that is not RESOLVED is parked (INV-ESC-2). Score movement alone neither causes nor prevents stalemate, and a
 round whose only change is in `## NOTES` is not progress. Stalemate is checked
 from round 3 on, before the soft target as well as after it, and terminates
 through the INV-ESC-1 batch.
@@ -214,7 +224,7 @@ exactly one line per fixed class (`UB_SWEEP_CLASSES` in
 partial-failure-and-rollback, permissions-and-identity, time-and-ordering,
 external-dependency-down, human-misuse, migration-and-compat), each marked
 COVERED, UNCOVERED or N-A. An UNCOVERED line must name the `UB-n` critique
-raised for it. `validate-output --round 1` fails the turn when the section, a
+raised for it, and that critique must be in the same response. `validate-output --round 1` fails the turn when the section, a
 class, or an UNCOVERED line's critique reference is missing (a FORMAT failure,
 INV-FAIL-1). The sweep result is shown in the round 1 card and persisted with
 the round.
@@ -222,9 +232,11 @@ the round.
 ### INV-ADMIT-1 — Admissibility of new findings after round 1
 
 From round 2 on, a finding whose id is above the highest id in play is
-**admitted** to the ledger only if it carries `Triggered-by: UB-m` (the change
-made for UB-m created or exposed it) or, for a CRITICAL or MAJOR finding,
-`Missed-because:` (what round 1 could not see). Any other new finding is
+**admitted** to the ledger only if it carries `Triggered-by: UB-m` naming a
+finding already in play (UB-1 up to `--last-id`; the change made for UB-m
+created or exposed it) or, for a CRITICAL or MAJOR finding, a non-empty
+`Missed-because:` (what round 1 could not see). `--last-id 0` on round 2 or
+later is reported as a warning, because it makes every finding new. Any other new finding is
 **noted**: `validate-output` reports it under `admissibility.noted`, it is
 shown in the round card and the final summary under "Noted (not debated)", it
 never enters the ledger and it never blocks termination. Codex is told to place
@@ -259,9 +271,11 @@ The format-repair stub is a fixed template with exactly three interpolation
 slots: the expected section headers, the category list with per-category
 bounds, and the offending output quoted verbatim. It carries no debate
 protocol blocks and no plan text. At most ONE repair turn is permitted per
-round. The repaired output must preserve the pre-repair score vector and
-critique count — a repair may fix shape only, never substance — otherwise the
-turn is a FORMAT failure. Rounds that went through repair are recorded with
+round. The repaired output must preserve the pre-repair score vector, critique
+count, and the id, severity and Category of every id'd critique — a repair may
+fix shape only, never substance — otherwise the turn is a FORMAT failure. The
+one exception is round 1: a repair may add one critique per UNCOVERED sweep row
+that named none (INV-SWEEP-1), since adding it is the only shape-preserving fix. Rounds that went through repair are recorded with
 `formatRepair:true` and listed in the debate log.
 
 ## Failure Classes

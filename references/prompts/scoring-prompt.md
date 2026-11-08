@@ -12,8 +12,8 @@ Assemble by interpolating:
   its CURRENT state using the agreed framework."
   Confirmation turn (INV-TERM-4, `codex-turn --confirm-only`): "Every
   CRITICAL and MAJOR finding is now RESOLVED. Confirm each resolution against
-  the current plan text or REGRESS it with evidence, rule on any open MINOR
-  findings, and re-score. Only a CRITICAL new finding with Triggered-by or
+  the current plan text or REGRESS it with evidence, hold or drop each open
+  MINOR finding against the changes in this rebuttal, and re-score. Only a CRITICAL new finding with Triggered-by or
   Missed-because is admitted this round."
 - `{PLAN_TEXT}` — R1: the full plan. R2+: omit (Codex retains via
   `--resume-last`); pass Claude's rebuttal text + revised plan instead.
@@ -33,12 +33,12 @@ Assemble by interpolating:
 
 Write to:
 - R1: `<session>/p2-r1-scoring.md`
-- R2+: `<session>/p2-r<N>-rebuttal.md` (when content >= 500 chars; otherwise
-  pass directly as the positional `task --resume-last "..."` argument).
+- R2+: `<session>/p2-r<N>-rebuttal.md`, whatever its length — `codex-turn`
+  takes only `--prompt-file`, never an inline prompt (INV-A9).
 
 Always `.md`. Send with `codex-turn --round N --last-id <highest UB id in
-play>` (plus `--confirm-only` on a confirmation turn) so validation applies the
-right round rules.
+play>` (plus `--confirm-only` on a confirmation turn, round 2 or later) so
+validation applies the right round rules.
 
 ```xml
 <task>

@@ -498,12 +498,17 @@ cmd_validate_output() {
       *) echo "validate-output: unknown arg $1" >&2; return 2 ;;
     esac
   done
-  case "$round$last_id" in *[!0-9]*) echo "validate-output: --round and --last-id take integers" >&2; return 2 ;; esac
+  case "$round" in ''|*[!0-9]*) echo "validate-output: --round and --last-id take integers" >&2; return 2 ;; esac
+  case "$last_id" in ''|*[!0-9]*) echo "validate-output: --round and --last-id take integers" >&2; return 2 ;; esac
+  if [ "$confirm_only" = true ] && [ "$round" -lt 2 ]; then
+    echo "validate-output: --confirm-only requires --round 2 or later (INV-TERM-4)" >&2; return 2
+  fi
   [ -r "$contract" ] || { echo "validate-output: contract unreadable" >&2; return 2; }
   [ -r "$input" ] || { echo "validate-output: input unreadable" >&2; return 2; }
   # A broken contract fails loudly instead of validating vacuously (ok:true
   # with zero checks performed).
-  jq -e '(.categories | type == "array") and (.categories | length > 0) and (.max | type == "number")' \
+  jq -e '(.categories | type == "array") and (.categories | length > 0) and (.max | type == "number")
+         and all(.categories[]; (.name | type == "string") and (.name | test("[\t\n\r]") | not))' \
     "$contract" >/dev/null 2>&1 || {
     echo "validate-output: contract is not valid framework JSON ({categories:[{name,weight}...], max:N}): $contract" >&2
     return 2
@@ -524,25 +529,32 @@ cmd_validate_output() {
     def crit($r): ([$r[] | select(.[0] == "C")][0]);
     def xs($r): [$r[] | select(.[0] == "X")
                  | {id: .[1], sev: .[2], cat: .[3], ev: (.[4]|tonumber), im: (.[5]|tonumber),
-                    su: (.[6]|tonumber), trig: (.[7] == "1"), miss: (.[8] == "1")}];
-    def es($r): [$r[] | select(.[0] == "E") | {cls: .[1], status: .[2], ref: (.[3] == "1")}];
+                    su: (.[6]|tonumber), trig: (.[7]|tonumber), miss: (.[8]|tonumber)}];
+    def es($r): [$r[] | select(.[0] == "E") | {cls: .[1], status: .[2], ref: (.[3]|tonumber)}];
+    def ided($r): [xs($r)[] | select(.id != "-")] | map(.id |= tonumber);
     rows as $r | ($b | rows) as $br
     | cats($r) as $cats | crit($r) as $cc | ($cc[1] | tonumber) as $ncrit
     | xs($r) as $xs | es($r) as $es
     | ([$r[] | select(.[0] == "H")][0]) as $hh
+    | (([$r[] | select(.[0] == "N")][0][1]) == "1") as $none
     | ($c[0].categories | map(.name)) as $want | ($cats | map(.name)) as $got
     | ($c[0].categories | map({key: (.name|norm), value: .weight}) | from_entries) as $w
     | ($sweep | split(" ") | map(select(length > 0))) as $classes
-    | ([$xs[] | select(.id != "-")] | map(.id |= tonumber)) as $ided
+    | ided($r) as $ided | ($ided | map(.id)) as $idedIds
     | ([$ided[] | select(.id > $lastId)] | sort_by(.id)) as $newx
     | ($newx | map(.id)) as $new
     | (if $b == "" then null
-       else {scores: (cats($br) | map(.score)), ncrit: (crit($br)[1] | tonumber)} end) as $base
+       else {scores: (cats($br) | map(.score)), ncrit: (crit($br)[1] | tonumber), ided: ided($br),
+             owed: (if $round == 1 then [es($br)[] | select(.status == "UNCOVERED" and .ref == 0)] | length else 0 end)}
+       end) as $base
     | ( (if ([$r[] | select(.[0] == "M")][0][1]) == "1" then [] else ["output is empty"] end)
       + ([["## CATEGORY SCORES", $hh[1]], ["## CRITIQUES", $hh[2]],
           ["## STRENGTHS", $hh[3]], ["## VERDICT", $hh[4]]]
          | map(select(.[1] != "1") | "missing section header: " + .[0]))
       + (if $round == 1 and $hh[5] != "1" then ["missing section header: ## EDGE CASE SWEEP (required on round 1)"] else [] end)
+      + (if $round >= 2 and $hh[6] != "1" then ["missing section header: ## NOTES (required on rounds 2+)"] else [] end)
+      + (if $hh[2] == "1" and $ncrit == 0 and ($none | not)
+         then ["CRITIQUES section has no entry and no \"- None.\" line (INV-ID-1)"] else [] end)
       + (($want | map(select(. as $x | ($got | map(norm) | index($x|norm)) == null)))
          | if length > 0 then ["missing categories: " + join(", ")] else [] end)
       + (($got | map(select(. as $g | ($want | map(norm) | index($g|norm)) == null)))
@@ -559,6 +571,10 @@ cmd_validate_output() {
          else [] end)
       + (($cc[5] | tonumber) as $leg
          | if $leg > 0 then ["\($leg) critique(s) without a UB-n id (INV-ID-1)"] else [] end)
+      + (($cc[6] | tonumber) as $unp
+         | if $unp > 0 then ["\($unp) critique header(s) not in the form UB-n **[SEVERITY]** summary (INV-ID-1)"] else [] end)
+      + (($cc[7] | tonumber) as $orp
+         | if $orp > 0 then ["\($orp) critique field line(s) outside any entry or repeated within one — a header line was not recognised (INV-ID-1)"] else [] end)
       + (($ided | group_by(.id) | map(select(length > 1) | "UB-\(.[0].id)"))
          | if length > 0 then ["duplicate critique ids: " + join(", ")] else [] end)
       + (if ($new | length) > 0 and $new != [range($lastId + 1; $lastId + 1 + ($new | length))]
@@ -573,30 +589,51 @@ cmd_validate_output() {
            ((($classes - ($es | map(.cls))) | if length > 0 then ["edge case sweep missing classes: " + join(", ")] else [] end)
             + ((($es | map(.cls)) - $classes) | if length > 0 then ["edge case sweep has unknown classes: " + join(", ")] else [] end)
             + (($es | group_by(.cls) | map(select(length > 1) | .[0].cls)) | if length > 0 then ["edge case sweep repeats classes: " + join(", ")] else [] end)
-            + (([$es[] | select(.status == "UNCOVERED" and (.ref | not)) | .cls])
-               | if length > 0 then ["UNCOVERED sweep rows must name their critique (UB-n): " + join(", ")] else [] end))
+            + (([$es[] | select(.status == "UNCOVERED" and .ref == 0) | .cls])
+               | if length > 0 then ["UNCOVERED sweep rows must name their critique (UB-n): " + join(", ")] else [] end)
+            + (([$es[] | . as $e | select($e.status == "UNCOVERED" and $e.ref > 0 and (($idedIds | index($e.ref)) == null))
+                        | "\($e.cls) → UB-\($e.ref)"])
+               | if length > 0 then ["UNCOVERED sweep rows name a critique that is not in this response: " + join(", ")] else [] end))
          else [] end)
       + (if $base != null and ($base.scores | length > 0) and $base.scores != ($cats | map(.score))
          then ["repair changed scores: was [" + ($base.scores | join(",")) + "] now ["
                + ($cats | map(.score) | join(",")) + "]"] else [] end)
-      + (if $base != null and $base.ncrit > 0 and $base.ncrit != $ncrit
-         then ["repair changed critique count: was \($base.ncrit) now \($ncrit)"] else [] end)
+      + (if $base != null and $base.ncrit > 0
+            and ($ncrit < $base.ncrit or $ncrit > $base.ncrit + $base.owed)
+         then ["repair changed critique count: was \($base.ncrit) now \($ncrit)"
+               + (if $base.owed > 0 then " (at most \($base.owed) may be added for UNCOVERED sweep rows)" else "" end)]
+         else [] end)
+      + (if $base == null then [] else
+           [$base.ided[] | . as $be | ($ided | map(select(.id == $be.id)) | .[0]) as $now
+            | if $now == null then "repair dropped UB-\($be.id)"
+              elif $now.sev != $be.sev then "repair changed severity of UB-\($be.id): was \($be.sev) now \($now.sev)"
+              elif $be.cat != "" and ($now.cat | norm) != ($be.cat | norm) then "repair changed Category of UB-\($be.id): was \($be.cat) now \($now.cat)"
+              else empty end] end)
       ) as $errs
+    | (if $round >= 2 and $lastId == 0
+       then ["round \($round) with --last-id 0: every finding is classified as new — pass the session lastCritiqueId"]
+       else [] end) as $warns
     # Admissibility (INV-ADMIT-1) is a classification, never an error: a noted
     # finding stays in the output for the user to see but does not enter the ledger.
+    # Triggered-by must name a critique already in play (UB-1..UB-lastId);
+    # Missed-because must carry text. A reference that fails either test does
+    # not admit the finding — it is noted with the reason, never a format error.
     | (if $round >= 2 then
          ($newx | map(
-           if $confirmOnly then
-             (if .sev == "CRITICAL" and (.trig or .miss) then {id, admitted: true}
-              else {id, admitted: false, reason: "confirm-only round: only a CRITICAL finding with Triggered-by or Missed-because is admitted"} end)
-           else
-             (if .trig then {id, admitted: true}
-              elif .miss and .sev != "MINOR" then {id, admitted: true}
-              elif .miss then {id, admitted: false, reason: "MINOR finding on round \($round) with no Triggered-by"}
-              else {id, admitted: false, reason: "new finding on round \($round) with neither Triggered-by nor Missed-because"} end)
-           end))
+           (.trig >= 1 and .trig <= $lastId) as $okTrig | (.miss == 1) as $okMiss
+           | if $confirmOnly then
+               (if .sev == "CRITICAL" and ($okTrig or $okMiss) then {id, admitted: true}
+                else {id, admitted: false, reason: "confirm-only round: only a CRITICAL finding with Triggered-by or Missed-because is admitted"} end)
+             else
+               (if $okTrig then {id, admitted: true}
+                elif $okMiss and .sev != "MINOR" then {id, admitted: true}
+                elif .trig != 0 then {id, admitted: false, reason: "Triggered-by names no critique in play (must be UB-1..UB-\($lastId))"}
+                elif .miss == -1 then {id, admitted: false, reason: "Missed-because is empty"}
+                elif $okMiss then {id, admitted: false, reason: "MINOR finding on round \($round) with no Triggered-by"}
+                else {id, admitted: false, reason: "new finding on round \($round) with neither Triggered-by nor Missed-because"} end)
+             end))
        else ($newx | map({id, admitted: true})) end) as $adm
-    | {ok: (($errs | length) == 0), errors: $errs, categories: $cats,
+    | {ok: (($errs | length) == 0), errors: $errs, warnings: $warns, categories: $cats,
        critiqueCount: $ncrit, total: ($cats | map(.score) | add // 0),
        critiques: ($ided | map({id: "UB-\(.id)", severity: .sev, category: .cat})),
        lastId: (([$ided[].id] + [$lastId]) | max),
@@ -664,9 +701,13 @@ cmd_render_contract() {
     esac
   done
   [ -r "$contract" ] || { echo "render-contract: --contract <framework.json> required" >&2; return 2; }
-  jq -e '(.categories | type == "array") and (.categories | length > 0)' "$contract" >/dev/null 2>&1 || {
+  jq -e '(.categories | type == "array") and (.categories | length > 0)
+         and all(.categories[]; (.name | type == "string") and (.name | test("[\t\n\r]") | not))' \
+    "$contract" >/dev/null 2>&1 || {
     echo "render-contract: contract is not valid framework JSON" >&2; return 2; }
 
+  jq -e '(.attackSurface // []) | (type == "array") and all(type == "string")' "$contract" >/dev/null 2>&1 || {
+    echo "render-contract: attackSurface must be an array of strings" >&2; return 2; }
   if [ "$part" = "surface" ]; then
     jq -r '.attackSurface // [] | if length == 0
              then "- (none locked in Phase 1 — apply the generic attack surface)"
@@ -674,7 +715,7 @@ cmd_render_contract() {
     return 0
   fi
   [ "$part" = "contract" ] || { echo "render-contract: --part must be contract or surface" >&2; return 2; }
-  case "$round" in ''|*[!0-9]*) echo "render-contract: --round N (>= 1) required" >&2; return 2 ;; esac
+  case "$round" in ''|*[!0-9]*|0) echo "render-contract: --round N (>= 1) required" >&2; return 2 ;; esac
   [ -r "$doc" ] || { echo "render-contract: template doc unreadable: $doc" >&2; return 2; }
 
   local base pre_frag="" post_frag="" cats classes
@@ -683,10 +724,15 @@ cmd_render_contract() {
   cats="$(jq -r '.categories[] | "- \(.name): {0-\(.weight)}"' "$contract")"
   classes="$(printf '%s\n' "$UB_SWEEP_CLASSES" | tr ' ' '\n' \
     | sed 's/.*/- &: COVERED | UNCOVERED | N-A — {one line: the plan text that covers it, the UB-n you raised, or why it cannot apply}/')"
+  # A fragment is separated from the neighbouring section by one blank line.
   if [ "$round" = "1" ]; then
     pre_frag="$(ub_doc_block "$doc" 'Phase 2 — round 1 fragment')"
+    [ -n "$pre_frag" ] || { echo "render-contract: round 1 fragment block not found in $doc" >&2; return 2; }
+    pre_frag="$pre_frag"$'\n'
   else
     post_frag="$(ub_doc_block "$doc" 'Phase 2 — rounds 2+ fragment')"
+    [ -n "$post_frag" ] || { echo "render-contract: rounds 2+ fragment block not found in $doc" >&2; return 2; }
+    post_frag=$'\n'"$post_frag"$'\n'
   fi
   printf '%s\n' "$base" \
     | ub_expand ROUND_PRE "$pre_frag" \
@@ -698,34 +744,51 @@ cmd_render_contract() {
 # One pass over a response file, emitting a tagged TSV stream for jq:
 #   S <name> <score>   per parsed category-score line
 #   M <0|1>            file has any non-whitespace content
-#   H <h1> <h2> <h3> <h4>  presence of the four required section headers
-#   C <n> <ev> <im> <su>   critique count and Evidence/Impact/Suggestion counts
+#   H <h1> .. <h6>     presence of CATEGORY SCORES, CRITIQUES, STRENGTHS,
+#                      VERDICT, EDGE CASE SWEEP, NOTES headers ("## " or "### ")
+#   N <0|1>            the CRITIQUES section carries an explicit "- None." line
+#   C <n> <ev> <im> <su> <legacy> <unparsed> <orphan>
+#                      entry count, Evidence/Impact/Suggestion counts, entries
+#                      with a severity tag but no UB id, lines that start with a
+#                      UB id but are not a well-formed header, field lines seen
+#                      outside any entry
+#   X <id> <sev> <cat> <ev> <im> <su> <trig> <miss>
+#                      one row per critique entry: UB id ("-" when missing),
+#                      severity, Category line, sub-field counts, Triggered-by
+#                      (the referenced UB number, -1 when the line names none,
+#                      0 when absent) and Missed-because (1 present with text,
+#                      -1 present but empty, 0 absent)
+#   E <class> <status> <ref>  one row per EDGE CASE SWEEP line (ref = the UB
+#                      number the line names, 0 when none)
 # The single home of the response grammar — the baseline (pre-repair) file is
 # scanned by this same function, so the two parses can never drift apart.
-#   X <id> <sev> <cat> <ev> <im> <su> <trig> <miss>
-#                      one row per critique entry: UB id ("-" for a legacy
-#                      numbered entry), severity, Category line, sub-field
-#                      counts, Triggered-by / Missed-because presence
-#   E <class> <status> <ref>  one row per EDGE CASE SWEEP line (ref=1 when the
-#                      line names a UB-n critique)
+# Tolerated around an entry header: leading whitespace, a "- " / "* " bullet,
+# a "3. " / "3) " number, bold anywhere, any case in the severity, a colon
+# after the id. Anything else that carries a UB id or a severity tag inside
+# the CRITIQUES section is reported, never silently dropped (INV-ID-1).
 ub_scan_output() {
   awk '
     function flush() {
       if (cur != "")
         printf "X\t%s\t%s\t%s\t%d\t%d\t%d\t%d\t%d\n", cid, csev, ccat, cev, cim, csu, ctrig, cmiss
       cur = ""; cid = ""; csev = ""; ccat = ""; cev = 0; cim = 0; csu = 0; ctrig = 0; cmiss = 0
+      split("", seen)
     }
+    function trim(v) { gsub(/^[[:space:]]+|[[:space:]]+$/, "", v); return v }
+    function ubnum(v) { return match(toupper(v), /UB-[0-9]+/) ? substr(v, RSTART + 3, RLENGTH - 3) + 0 : 0 }
     /[^[:space:]]/ { ne = 1 }
-    index($0, "## CATEGORY SCORES") { h1 = 1 }
-    index($0, "## CRITIQUES") { h2 = 1 }
-    index($0, "## STRENGTHS") { h3 = 1 }
-    index($0, "## VERDICT") { h4 = 1 }
-    index($0, "## EDGE CASE SWEEP") { h5 = 1 }
-    index($0, "## NOTES") { h6 = 1 }
-    /^## / { if (inc) flush(); inblk = 0; inc = 0; insw = 0 }
-    /^## CATEGORY SCORES/ { inblk = 1; next }
-    /^## CRITIQUES/ { inc = 1; next }
-    /^## EDGE CASE SWEEP/ { insw = 1; next }
+    /^#+[[:space:]]*CATEGORY SCORES/ { h1 = 1 }
+    /^#+[[:space:]]*CRITIQUES/ { h2 = 1 }
+    /^#+[[:space:]]*STRENGTHS/ { h3 = 1 }
+    /^#+[[:space:]]*VERDICT/ { h4 = 1 }
+    /^#+[[:space:]]*EDGE CASE SWEEP/ { h5 = 1 }
+    /^#+[[:space:]]*NOTES/ { h6 = 1 }
+    /^#+[[:space:]]*(CATEGORY SCORES|CRITIQUES|STRENGTHS|VERDICT|EDGE CASE SWEEP|NOTES)/ {
+      if (inc) flush(); inblk = 0; inc = 0; insw = 0
+    }
+    /^#+[[:space:]]*CATEGORY SCORES/ { inblk = 1; next }
+    /^#+[[:space:]]*CRITIQUES/ { inc = 1; next }
+    /^#+[[:space:]]*EDGE CASE SWEEP/ { insw = 1; next }
     inblk && /^[[:space:]]*-[[:space:]]*.+:[[:space:]]*-?[0-9]+[[:space:]]*$/ {
       line = $0
       sub(/^[[:space:]]*-[[:space:]]*/, "", line)
@@ -736,43 +799,62 @@ ub_scan_output() {
       gsub(/^[[:space:]]+|[[:space:]]+$/, "", name)
       printf "S\t%s\t%s\n", name, score
     }
-    insw && /^[[:space:]]*-[[:space:]]*[a-z][a-z-]*:[[:space:]]*(COVERED|UNCOVERED|N-A)/ {
-      line = $0
-      sub(/^[[:space:]]*-[[:space:]]*/, "", line)
-      idx = index(line, ":")
-      cls = substr(line, 1, idx - 1)
-      rest = substr(line, idx + 1)
-      match(rest, /(COVERED|UNCOVERED|N-A)/)
-      st = substr(rest, RSTART, RLENGTH)
-      printf "E\t%s\t%s\t%d\n", cls, st, (rest ~ /UB-[0-9]+/) ? 1 : 0
-    }
-    # Critique entry header: "UB-7 **[MAJOR]** summary" (a leading "3. " or
-    # bold around the id is tolerated; the id and the bracketed severity are not).
-    inc && /^[[:space:]]*([0-9]+\.[[:space:]]+)?(\*\*)?UB-[0-9]+(\*\*)?[[:space:]]+\*\*\[(CRITICAL|MAJOR|MINOR)\]\*\*/ {
-      flush(); n++; cur = "x"
-      match($0, /UB-[0-9]+/); cid = substr($0, RSTART + 3, RLENGTH - 3)
-      match($0, /\[(CRITICAL|MAJOR|MINOR)\]/); csev = substr($0, RSTART + 1, RLENGTH - 2)
+    insw {
+      line = $0; gsub(/\*\*/, "", line)
+      sub(/^[[:space:]]*[-*][[:space:]]*/, "", line)
+      if (tolower(line) ~ /^[a-z][a-z-]*[[:space:]]*:/) {
+        idx = index(line, ":")
+        cls = tolower(substr(line, 1, idx - 1)); gsub(/[[:space:]]+$/, "", cls)
+        rest = substr(line, idx + 1)
+        ur = toupper(rest)
+        if (match(ur, /(UNCOVERED|COVERED|N-A)/)) {
+          st = substr(ur, RSTART, RLENGTH)
+          printf "E\t%s\t%s\t%d\n", cls, st, ubnum(rest)
+        }
+      }
       next
     }
-    # Legacy numbered entry without a UB id: counted, reported as an error by jq.
-    inc && /^[[:space:]]*[0-9]+\.[[:space:]]/ { flush(); n++; legacy++; cur = "x"; cid = "-"; csev = "-"; next }
-    cur != "" && /^[[:space:]]*-[[:space:]]*Category:/ {
-      line = $0
-      sub(/^[[:space:]]*-[[:space:]]*Category:[[:space:]]*/, "", line)
-      gsub(/\*\*/, "", line)
-      gsub(/[[:space:]]+$/, "", line)
-      ccat = line
+    inc {
+      nl = $0; gsub(/\*\*/, "", nl)
+      sub(/^[[:space:]]*/, "", nl)
+      sub(/^(#+|[-*]|[0-9]+[.)])[[:space:]]*/, "", nl)
+      nu = toupper(nl)
+      if (nu ~ /^UB-[0-9]+:?[[:space:]]*\[(CRITICAL|MAJOR|MINOR)\]/) {
+        flush(); n++; cur = "x"
+        cid = ubnum(nu)
+        match(nu, /\[(CRITICAL|MAJOR|MINOR)\]/); csev = substr(nu, RSTART + 1, RLENGTH - 2)
+        next
+      }
+      if (nu ~ /^(NONE|NO FINDINGS|NO CRITIQUES)\.?$/) { none = 1; next }
+      if (nu ~ /^(CATEGORY|EVIDENCE|IMPACT|SUGGESTION|TRIGGERED-BY|MISSED-BECAUSE)[[:space:]]*:/) {
+        if (cur == "") { orphan++; next }
+        v = trim(substr(nl, index(nl, ":") + 1))
+        # A field seen twice in one entry means the header of the next entry
+        # was not recognised: its fields would otherwise be credited to this
+        # one (and a dropped finding would vanish). Reported, never merged.
+        if (nu ~ /^CATEGORY/) { if (seen["c"]++) orphan++; else ccat = v }
+        else if (nu ~ /^EVIDENCE/) { if (seen["e"]++) orphan++; else { cev++; ev++ } }
+        else if (nu ~ /^IMPACT/) { if (seen["i"]++) orphan++; else { cim++; im++ } }
+        else if (nu ~ /^SUGGESTION/) { if (seen["s"]++) orphan++; else { csu++; su++ } }
+        else if (nu ~ /^TRIGGERED-BY/) { if (seen["t"]++) orphan++; else { r = ubnum(v); ctrig = (r > 0) ? r : -1 } }
+        else if (nu ~ /^MISSED-BECAUSE/) { if (seen["m"]++) orphan++; else cmiss = (v != "") ? 1 : -1 }
+        next
+      }
+      # A line that leads with a UB id and names a severity, or leads with a
+      # bracketed severity, but is not a well-formed header: counted as an
+      # entry (so its fields are not orphans) and reported.
+      if ((nu ~ /^UB-[0-9]+/ && nu ~ /(CRITICAL|MAJOR|MINOR)/) || nu ~ /^\[(CRITICAL|MAJOR|MINOR)\]/) {
+        if (nu ~ /^UB-[0-9]+/) unparsed++; else legacy++
+        flush(); n++; cur = "x"; cid = "-"; csev = "-"
+        next
+      }
     }
-    cur != "" && /^[[:space:]]*-[[:space:]]*Evidence:/ { cev++; ev++ }
-    cur != "" && /^[[:space:]]*-[[:space:]]*Impact:/ { cim++; im++ }
-    cur != "" && /^[[:space:]]*-[[:space:]]*Suggestion:/ { csu++; su++ }
-    cur != "" && /^[[:space:]]*-[[:space:]]*Triggered-by:/ { ctrig = 1 }
-    cur != "" && /^[[:space:]]*-[[:space:]]*Missed-because:/ { cmiss = 1 }
     END {
       if (inc) flush()
       printf "M\t%d\n", ne + 0
       printf "H\t%d\t%d\t%d\t%d\t%d\t%d\n", h1 + 0, h2 + 0, h3 + 0, h4 + 0, h5 + 0, h6 + 0
-      printf "C\t%d\t%d\t%d\t%d\t%d\n", n + 0, ev + 0, im + 0, su + 0, legacy + 0
+      printf "N\t%d\n", none + 0
+      printf "C\t%d\t%d\t%d\t%d\t%d\t%d\t%d\n", n + 0, ev + 0, im + 0, su + 0, legacy + 0, unparsed + 0, orphan + 0
     }' "$1"
 }
 
@@ -802,6 +884,13 @@ cmd_codex_turn() {
       *) echo "codex-turn: unknown arg $1" >&2; return 2 ;;
     esac
   done
+  # Validation options are checked before any Codex call is spent: a bad flag
+  # is a caller error (rc 2), never a FORMAT failure of the turn.
+  case "$v_round" in ''|*[!0-9]*) echo "codex-turn: --round and --last-id take integers" >&2; return 2 ;; esac
+  case "$v_last_id" in ''|*[!0-9]*) echo "codex-turn: --round and --last-id take integers" >&2; return 2 ;; esac
+  if [ "$v_confirm" = 1 ] && [ "$v_round" -lt 2 ]; then
+    echo "codex-turn: --confirm-only requires --round 2 or later (INV-TERM-4)" >&2; return 2
+  fi
   # Validation options forwarded to validate-output (INV-SWEEP-1, INV-ADMIT-1).
   ub_validate() {
     if [ "$v_confirm" = 1 ]; then

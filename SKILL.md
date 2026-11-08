@@ -48,8 +48,8 @@ UB="${ULTRABLITZ_ROOT:-$HOME/.claude/skills/ultrablitz}/hooks/ultrablitz-utils.s
 `codex-turn` returns one JSON object:
 `{ok, failureClass, jobId, threadId, codexSessionId, outputFile, attempts, formatRepair, message}`.
 Its validation record, `$SD/<label>.validation.json`, carries
-`{ok, errors, categories, total, critiques[{id,severity,category}], lastId,
-newIds, admissibility{admitted[], noted[{id,reason}]}, sweep}`.
+`{ok, errors, warnings, categories, total, critiques[{id,severity,category}],
+lastId, newIds, admissibility{admitted[], noted[{id,reason}]}, sweep}`.
 Failure classes and their state effects are **INV-FAIL-1**; none of them mutate
 the ledger, scores, or the round counter.
 
@@ -176,7 +176,8 @@ $LAST`.
 **Confirmation turn.** When your rebuttal leaves every CRITICAL and MAJOR entry
 RESOLVED and none REGRESSED, the next turn is confirm-only (**INV-TERM-4**): use
 the confirmation `{ROUND_CONTEXT}` from the template header and add
-`--confirm-only`. If it validates with no REGRESSED entry, no admitted new
+`--confirm-only`. Resolve or park every MINOR you can in that rebuttal — an open
+MINOR blocks Consensus (**INV-TERM-2**). If it validates with no REGRESSED entry, no admitted new
 finding, and **INV-TERM-2** holds, the run ends by Consensus.
 
 Every turn:
@@ -201,7 +202,9 @@ Then, in order:
    reconcile (**INV-SCORE-2**) — block any delta that no ledger change justifies.
    Add `admissibility.admitted` ids to the ledger as UNRESOLVED; `admissibility.
    noted` ids are shown, never ledgered, and never block termination
-   (**INV-ADMIT-1**). Set `lastCritiqueId` to `lastId`.
+   (**INV-ADMIT-1**). Set `lastCritiqueId` to `lastId`. A non-empty
+   `warnings` array means the call was mis-assembled (e.g. `--last-id 0` after
+   round 1): fix the flags and re-validate before recording anything.
 3. `session-write` the new round, scores, ledger, `lastCritiqueId`,
    `ledgerUnchangedRounds` (0 if any status changed or a finding was admitted
    this round, else +1), `threadId`, `codexSessionId`, and `jobIds` entry (with
@@ -226,9 +229,10 @@ Refined Plan: {if changed}
 **Anti-gaming.** Enforce the anti-gaming controls on every round (**INV-GAME-1**);
 a recycled critique with no new evidence stays RESOLVED (**INV-LEDGER-3**).
 
-**Stalemate is ledger-based.** `ledgerUnchangedRounds >= 2`, or every entry that
-is not RESOLVED being PARKED, terminates the run as a stalemate (**INV-TERM-5**).
-Score drift without a ledger change is not progress.
+**Stalemate is ledger-based.** `ledgerUnchangedRounds >= 2`, or at least one
+PARKED entry with every entry that is not RESOLVED PARKED, terminates the run
+as a stalemate (**INV-TERM-5**). Score drift without a ledger change is not
+progress.
 
 **Escalation is batched.** Findings that remain unresolved when the debate ends
 (hard cap or stalemate), PARKED entries included, go to the user in one

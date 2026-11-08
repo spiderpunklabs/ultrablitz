@@ -54,6 +54,24 @@ const validBody = (scores = [24, 18, 19, 15, 18], nCrit = 1) => {
 
 const malformedBody = "I have some thoughts about the plan but no structured sections here.";
 
+// Round-aware bodies for the v7 contract (INV-SWEEP-1, INV-ADMIT-1).
+const SWEEP_CLASSES = [
+  "empty-or-none", "scale", "concurrency", "partial-failure-and-rollback",
+  "permissions-and-identity", "time-and-ordering", "external-dependency-down",
+  "human-misuse", "migration-and-compat",
+];
+const sweepSection = (uncovered = {}) =>
+  "## EDGE CASE SWEEP:\n" +
+  SWEEP_CLASSES.map((c) =>
+    c in uncovered ? `- ${c}: UNCOVERED — ${uncovered[c] || "no plan text handles it"}` : `- ${c}: COVERED — section 1`
+  ).join("\n") + "\n\n";
+const entry = (id, sev, extra = "") =>
+  `UB-${id} **[${sev}]** Stub finding ${id}\n   - Category: Gate & safety integrity\n${extra}   - Evidence: e${id}\n   - Impact: i${id}\n   - Suggestion: s${id}\n`;
+const v7Body = ({ sweep = "", crits = entry(1, "MAJOR"), notes = "" }) => {
+  const scores = validBody().split("\n\n## CRITIQUES:")[0];
+  return `${scores}\n\n${sweep}## CRITIQUES:\n${crits}\n${notes}## STRENGTHS:\n- Stub strength.\n\n## VERDICT:\nStub verdict paragraph.`;
+};
+
 // The account-refusal error shape recorded live on 2026-09-14 (codex 0.154.0).
 const refusalError = (m) =>
   `{"type":"error","status":400,"error":{"type":"invalid_request_error","message":"The '${m}' model is not supported when using Codex with a ChatGPT account."}}`;
@@ -117,6 +135,29 @@ function turnResult(state, reqModel) {
       };
     case "out-of-bounds":
       return { status: 0, rawOutput: validBody([99, 18, 19, 15, 18]), threadId: THREAD, sessionId: SESSION };
+    case "round1-sweep":
+      return { status: 0, rawOutput: v7Body({ sweep: sweepSection({ concurrency: "see UB-1" }) }), threadId: THREAD, sessionId: SESSION };
+    case "round1-owed-repair":
+      // An UNCOVERED row that names no critique; the repair adds UB-2 for it.
+      return {
+        status: 0,
+        rawOutput:
+          n === 1
+            ? v7Body({ sweep: sweepSection({ concurrency: "" }) })
+            : v7Body({ sweep: sweepSection({ concurrency: "see UB-2" }), crits: entry(1, "MAJOR") + entry(2, "MAJOR") }),
+        threadId: THREAD,
+        sessionId: SESSION,
+      };
+    case "round2-notes":
+      return {
+        status: 0,
+        rawOutput: v7Body({
+          crits: entry(1, "MAJOR") + entry(2, "MAJOR", "   - Triggered-by: UB-1\n") + entry(3, "MINOR"),
+          notes: "## NOTES:\n- A passing observation.\n\n",
+        }),
+        threadId: THREAD,
+        sessionId: SESSION,
+      };
     default:
       return { status: 0, rawOutput: validBody(), threadId: THREAD, sessionId: SESSION };
   }
