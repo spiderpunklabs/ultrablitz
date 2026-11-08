@@ -236,7 +236,8 @@ From round 2 on, a finding whose id is above the highest id in play is
 finding already in play (UB-1 up to `--last-id`; the change made for UB-m
 created or exposed it) or, for a CRITICAL or MAJOR finding, a non-empty
 `Missed-because:` (what round 1 could not see). `--last-id 0` on round 2 or
-later is reported as a warning, because it makes every finding new. Any other new finding is
+later is reported as a warning, because it makes every finding new; it is
+advisory only when round 1 genuinely recorded no findings. Any other new finding is
 **noted**: `validate-output` reports it under `admissibility.noted`, it is
 shown in the round card and the final summary under "Noted (not debated)", it
 never enters the ledger and it never blocks termination. Codex is told to place
@@ -275,7 +276,8 @@ round. The repaired output must preserve the pre-repair score vector, critique
 count, and the id, severity and Category of every id'd critique — a repair may
 fix shape only, never substance — otherwise the turn is a FORMAT failure. The
 one exception is round 1: a repair may add one critique per UNCOVERED sweep row
-that named none (INV-SWEEP-1), since adding it is the only shape-preserving fix. Rounds that went through repair are recorded with
+that named none, or named an id absent from the response (INV-SWEEP-1), since
+adding it is the only shape-preserving fix. Rounds that went through repair are recorded with
 `formatRepair:true` and listed in the debate log.
 
 ## Failure Classes

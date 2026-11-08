@@ -204,7 +204,9 @@ Then, in order:
    noted` ids are shown, never ledgered, and never block termination
    (**INV-ADMIT-1**). Set `lastCritiqueId` to `lastId`. A non-empty
    `warnings` array means the call was mis-assembled (e.g. `--last-id 0` after
-   round 1): fix the flags and re-validate before recording anything.
+   a round 1 that recorded findings): fix the flags and re-validate before
+   recording anything. If the session's `lastCritiqueId` really is 0 (round 1
+   found nothing), the warning is advisory and the round stands.
 3. `session-write` the new round, scores, ledger, `lastCritiqueId`,
    `ledgerUnchangedRounds` (0 if any status changed or a finding was admitted
    this round, else +1), `threadId`, `codexSessionId`, and `jobIds` entry (with

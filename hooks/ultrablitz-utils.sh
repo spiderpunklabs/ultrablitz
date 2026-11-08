@@ -549,7 +549,10 @@ cmd_validate_output() {
     | ($newx | map(.id)) as $new
     | (if $b == "" then null
        else {scores: (cats($br) | map(.score)), ncrit: (crit($br)[1] | tonumber), ided: ided($br),
-             owed: (if $round == 1 then [es($br)[] | select(.status == "UNCOVERED" and .ref == 0)] | length else 0 end)}
+             owed: (if $round == 1
+                    then (ided($br) | map(.id)) as $bids
+                         | [es($br)[] | . as $e | select($e.status == "UNCOVERED" and ($e.ref == 0 or (($bids | index($e.ref)) == null)))] | length
+                    else 0 end)}
        end) as $base
     | ( (if ([$r[] | select(.[0] == "M")][0][1]) == "1" then [] else ["output is empty"] end)
       + ([["## CATEGORY SCORES", $hh[1]], ["## CRITIQUES", $hh[2]],
@@ -559,6 +562,8 @@ cmd_validate_output() {
       + (if $round >= 2 and $hh[6] != "1" then ["missing section header: ## NOTES (required on rounds 2+)"] else [] end)
       + (if $hh[2] == "1" and $ncrit == 0 and ($none | not)
          then ["CRITIQUES section has no entry and no \"- None.\" line (INV-ID-1)"] else [] end)
+      + (if $ncrit > 0 and $none
+         then ["CRITIQUES section has entries and a \"- None.\" line; drop one (INV-ID-1)"] else [] end)
       + (($want | map(select(. as $x | ($got | map(norm) | index($x|norm)) == null)))
          | if length > 0 then ["missing categories: " + join(", ")] else [] end)
       + (($got | map(select(. as $g | ($want | map(norm) | index($g|norm)) == null)))
@@ -593,6 +598,8 @@ cmd_validate_output() {
            ((($classes - ($es | map(.cls))) | if length > 0 then ["edge case sweep missing classes: " + join(", ")] else [] end)
             + ((($es | map(.cls)) - $classes) | if length > 0 then ["edge case sweep has unknown classes: " + join(", ")] else [] end)
             + (($es | group_by(.cls) | map(select(length > 1) | .[0].cls)) | if length > 0 then ["edge case sweep repeats classes: " + join(", ")] else [] end)
+            + (([$es[] | select(.status == "INVALID") | .cls])
+               | if length > 0 then ["edge case sweep rows must lead with COVERED, UNCOVERED or N-A: " + join(", ")] else [] end)
             + (([$es[] | select(.status == "UNCOVERED" and .ref == 0) | .cls])
                | if length > 0 then ["UNCOVERED sweep rows must name their critique (UB-n): " + join(", ")] else [] end)
             + (([$es[] | . as $e | select($e.status == "UNCOVERED" and $e.ref > 0 and (($idedIds | index($e.ref)) == null))
@@ -615,7 +622,7 @@ cmd_validate_output() {
               else empty end] end)
       ) as $errs
     | (if $round >= 2 and $lastId == 0
-       then ["round \($round) with --last-id 0: every finding is classified as new — pass the session lastCritiqueId"]
+       then ["round \($round) with --last-id 0: every finding is classified as new — pass the session lastCritiqueId (expected only when round 1 recorded no findings)"]
        else [] end) as $warns
     # Admissibility (INV-ADMIT-1) is a classification, never an error: a noted
     # finding stays in the output for the user to see but does not enter the ledger.
@@ -810,11 +817,14 @@ ub_scan_output() {
         idx = index(line, ":")
         cls = tolower(substr(line, 1, idx - 1)); gsub(/[[:space:]]+$/, "", cls)
         rest = substr(line, idx + 1)
-        ur = toupper(rest)
-        if (match(ur, /(UNCOVERED|COVERED|N-A)/)) {
-          st = substr(ur, RSTART, RLENGTH)
-          printf "E\t%s\t%s\t%d\n", cls, st, ubnum(rest)
-        }
+        ur = toupper(rest); sub(/^[[:space:]]+/, "", ur)
+        # The status must lead the text: a leftmost match would read
+        # "not covered anywhere" as COVERED.
+        if (match(ur, /^(UNCOVERED|COVERED|N-A)/) && substr(ur, RLENGTH + 1) !~ /^[A-Z0-9]/)
+          st = substr(ur, 1, RLENGTH)
+        else
+          st = "INVALID"
+        printf "E\t%s\t%s\t%d\n", cls, st, ubnum(rest)
       }
       next
     }
@@ -823,6 +833,17 @@ ub_scan_output() {
       sub(/^[[:space:]]*/, "", nl)
       sub(/^(#+|[-*]|[0-9]+[.)])[[:space:]]*/, "", nl)
       nu = toupper(nl)
+      isfield = (nu ~ /^(CATEGORY|EVIDENCE|IMPACT|SUGGESTION|TRIGGERED-BY|MISSED-BECAUSE)[[:space:]]*:/)
+      # A pending header candidate (below) becomes an entry only if a field
+      # line follows it; otherwise it was prose and is dropped.
+      if (pend) {
+        if (nu == "") next
+        if (isfield) {
+          flush(); n++; cur = "x"; cid = "-"; csev = "-"
+          if (pend == 1) unparsed++; else legacy++
+        }
+        pend = 0
+      }
       if (nu ~ /^UB-[0-9]+:?[[:space:]]*\[(CRITICAL|MAJOR|MINOR)\]/) {
         flush(); n++; cur = "x"
         cid = ubnum(nu)
@@ -830,7 +851,7 @@ ub_scan_output() {
         next
       }
       if (nu ~ /^(NONE|NO FINDINGS|NO CRITIQUES)\.?$/) { none = 1; next }
-      if (nu ~ /^(CATEGORY|EVIDENCE|IMPACT|SUGGESTION|TRIGGERED-BY|MISSED-BECAUSE)[[:space:]]*:/) {
+      if (isfield) {
         if (cur == "") { orphan++; next }
         v = trim(substr(nl, index(nl, ":") + 1))
         # A field seen twice in one entry means the header of the next entry
@@ -844,13 +865,21 @@ ub_scan_output() {
         else if (nu ~ /^MISSED-BECAUSE/) { if (seen["m"]++) orphan++; else cmiss = (v != "") ? 1 : -1 }
         next
       }
-      # A line that leads with a UB id and names a severity, or leads with a
-      # bracketed severity, but is not a well-formed header: counted as an
-      # entry (so its fields are not orphans) and reported.
-      if ((nu ~ /^UB-[0-9]+/ && nu ~ /(CRITICAL|MAJOR|MINOR)/) || nu ~ /^\[(CRITICAL|MAJOR|MINOR)\]/) {
-        if (nu ~ /^UB-[0-9]+/) unparsed++; else legacy++
-        flush(); n++; cur = "x"; cid = "-"; csev = "-"
-        next
+      # A malformed header: a column-0 line that leads with a UB id and names
+      # a severity, or carries a bracketed severity without an id. Indented
+      # lines are continuations of a field, never headers. A bracketed
+      # severity on a column-0 list item is an entry attempt even without
+      # fields; anything else is confirmed only by the field line that
+      # follows it, so prose such as "UB-1 is still MAJOR: ..." passes.
+      if ($0 !~ /^[[:space:]]/) {
+        kind = 0
+        if (nu ~ /^UB-[0-9]+/ && nu ~ /(CRITICAL|MAJOR|MINOR)/) kind = 1
+        else if (nu ~ /\[(CRITICAL|MAJOR|MINOR)\]/) kind = 2
+        if (kind == 2 && $0 ~ /^([-*]|[0-9]+[.)])[[:space:]]/) {
+          flush(); n++; cur = "x"; cid = "-"; csev = "-"; legacy++
+          next
+        }
+        if (kind) { pend = kind; next }
       }
     }
     END {

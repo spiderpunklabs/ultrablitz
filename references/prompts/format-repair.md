@@ -18,8 +18,9 @@ Your previous response did not match the required output shape.
 Re-emit that same response in the required shape. Do not change any score,
 critique, strength, or verdict content, and do not change any critique's id,
 severity or Category. Do not add or remove critiques — with one exception: if
-an EDGE CASE SWEEP line is UNCOVERED and names no critique, add that critique
-with the next unused UB id and name it on the sweep line. Do not add
+an EDGE CASE SWEEP line is UNCOVERED and names no critique, or names a UB id
+that is not in the response, add that critique with the next unused UB id and
+name it on the sweep line. Do not add
 commentary about this correction. This is a formatting fix only.
 
 Required section headers, in this order:

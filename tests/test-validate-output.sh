@@ -422,6 +422,70 @@ mk "$(compose --crit1 'UB-1 **[MAJOR]** Something
 out="$(v)"; rc=$?
 assert_json "$out" '"\(.ok) \(.critiqueCount)"' 'true 1'
 
+t "entries together with a - None. line fail"
+mk "$(compose --crit2 '- None.
+')"
+out="$(v)"; rc=$?
+assert_rc "$rc" 1
+assert_contains "$out" "line; drop one (INV-ID-1)"
+
+# --- Prose is not an entry; malformed headers still are ---------------------
+t "a column-0 restatement naming an id and a severity is prose"
+mk "$(compose --crit2 'UB-1 is still MAJOR: the rebuttal moved the check but not the lock.
+')"
+out="$(v)"
+assert_json "$out" '"\(.ok) \(.critiqueCount)"' 'true 1'
+
+t "a column-0 line leading with a bracketed severity is prose"
+mk "$(compose --crit2 '[MINOR] nits were folded into NOTES.
+')"
+out="$(v)"
+assert_json "$out" '"\(.ok) \(.critiqueCount)"' 'true 1'
+
+t "an indented continuation naming an id and a severity is prose"
+mk "$(compose --crit1 'UB-1 **[MAJOR]** Something
+   - Category: Gate & safety integrity
+   - Evidence: e
+   - Impact: i
+   - Suggestion: move it to
+     UB-3, which is MAJOR anyway.
+')"
+out="$(v)"
+assert_json "$out" '"\(.ok) \(.critiqueCount)"' 'true 1'
+
+t "prose under an unknown heading inside CRITIQUES is not an entry"
+mk "$(compose --crit2 '## RESTATED POSITIONS
+UB-1 remains MAJOR.
+')"
+out="$(v)"
+assert_json "$out" '"\(.ok) \(.critiqueCount)"' 'true 1'
+
+t "an id-first header in the wrong shape followed by fields still fails"
+mk "$(compose --crit2 'UB-2 — [CRITICAL] Second
+   - Category: Operability & maintenance economics
+   - Evidence: e
+   - Impact: i
+   - Suggestion: s
+')"
+out="$(v)"; rc=$?
+assert_rc "$rc" 1
+assert_contains "$out" "not in the form UB-n **[SEVERITY]** summary"
+
+t "a title-first list item with a bracketed severity and no fields fails"
+mk "$(compose --crit2 '- **Gate bypass** [MAJOR] — the hook can be skipped via env.
+')"
+out="$(v)"; rc=$?
+assert_rc "$rc" 1
+assert_contains "$out" "without a UB-n id"
+
+t "a sweep row whose status does not lead the text fails"
+mk "$(compose --sweep "$(printf '%s\n' "$sweep_txt" | sed 's/^- concurrency: UNCOVERED — see UB-1/- concurrency: not covered anywhere/')
+")"
+out="$(v --round 1)"; rc=$?
+assert_rc "$rc" 1
+t "the bad sweep row is named"
+assert_contains "$out" "must lead with COVERED, UNCOVERED or N-A: concurrency"
+
 # --- References must point at something --------------------------------------
 t "an UNCOVERED row naming a critique absent from the response fails"
 mk "$(compose --sweep "$(printf '%s\n' "$sweep_txt" | sed 's/see UB-1/see UB-9/')
@@ -515,5 +579,13 @@ out="$(v --round 1 --baseline "$SANDBOX/base.md")"; rc=$?
 assert_rc "$rc" 1
 t "the allowance is stated in the error"
 assert_contains "$out" "at most 1 may be added"
+
+t "round 1: a repair may add the critique an UNCOVERED row pointed at a missing id"
+compose --sweep "$(printf '%s\n' "$sweep_txt" | sed 's/see UB-1/see UB-9/')
+" > "$SANDBOX/base.md"
+mk "$(compose --sweep "$fixed_sweep
+" --crit2 "$crit2_major")"
+out="$(v --round 1 --baseline "$SANDBOX/base.md")"; rc=$?
+assert_rc "$rc" 0
 
 finish
