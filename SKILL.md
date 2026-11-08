@@ -1,6 +1,6 @@
 ---
 name: ultrablitz
-version: 6.0.0
+version: 7.0.0
 description: >-
   Adversarial debate loop between Claude and Codex to refine plans, ideas, and
   designs to perfection. Two-phase: first Claude and Codex negotiate the evaluation

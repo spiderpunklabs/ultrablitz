@@ -24,7 +24,7 @@
 #   trash-session          move one session dir to the trash
 set -uo pipefail
 
-UB_VERSION="6.0.0"
+UB_VERSION="7.0.0"
 
 # Where this script lives: references/ is resolved relative to it, so a
 # checkout, ~/.claude/skills/ultrablitz and a test sandbox all work unchanged.

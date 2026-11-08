@@ -7,7 +7,64 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [7.0.0] - 2026-11-08
+
+The debate protocol gains identity, scope and a stopping rule. v6's
+executable subcommands are integrated onto the current main line; v7 makes
+what they validate precise.
+
+### Added
+
+- **Stable critique identity (INV-ID-1).** Every finding is `UB-n`, assigned by
+  Codex, never renumbered, with a `Category:` line from the locked framework
+  and a defined severity. `validate-output` rejects un-id'd, duplicate,
+  out-of-sequence or foreign-category entries; the ledger, rebuttals and
+  summary refer to findings by id only.
+- **Round-1 edge-case sweep (INV-SWEEP-1).** The first scoring response must
+  mark nine fixed classes (empty-or-none, scale, concurrency,
+  partial-failure-and-rollback, permissions-and-identity, time-and-ordering,
+  external-dependency-down, human-misuse, migration-and-compat) as COVERED,
+  UNCOVERED or N-A, and every UNCOVERED class names the critique raised for
+  it. `validate-output --round 1` fails the turn otherwise.
+- **Admissibility of new findings (INV-ADMIT-1).** From round 2 on, a new
+  finding enters the ledger only with `Triggered-by: UB-m` or, for CRITICAL or
+  MAJOR severity, `Missed-because:`. Anything else is *noted*: shown to the
+  user, never debated, never blocking termination. Codex places such
+  observations under `## NOTES`.
+- **Confirmation turn (INV-TERM-4).** Once every CRITICAL and MAJOR entry is
+  RESOLVED, the next turn runs `--confirm-only`: Codex confirms or regresses
+  with evidence and only a CRITICAL new finding is admissible, so a converging
+  debate closes instead of inviting new scope.
+- **Ledger-based stalemate (INV-TERM-5)** — two consecutive rounds with no
+  ledger status change and no admitted finding — and the **NEEDS_USER
+  disposition (INV-ESC-2)**: a critique that turns on a decision only the user
+  can make is parked, not re-argued, and goes to the user in the one
+  termination batch. `session.json` gains `lastCritiqueId` and
+  `ledgerUnchangedRounds`.
+- **Domain attack surface locked in Phase 1 (INV-SURFACE-1).** Phase 1
+  negotiates 3–8 concrete failure classes under `## ATTACK SURFACE`; they are
+  locked into `framework.json` as `attackSurface[]` and reach every scoring
+  prompt through `{ATTACK_SURFACE}`. The generic list in debate-protocol.md
+  is gone.
+- **`render-contract` subcommand.** Prints the per-round `{OUTPUT_CONTRACT}`
+  from the single template in output-contract.md and the `{ATTACK_SURFACE}`
+  list from framework.json, so neither is ever hand-typed (INV-A9).
+- `codex-turn --round N --last-id N [--confirm-only]`, forwarded to
+  validation; `validate-output` reports `critiques[]`, `lastId`, `newIds`,
+  `admissibility{admitted,noted}` and `sweep`.
+
 ### Changed
+
+- The format-repair prompt lists the round's required headers (sweep on round
+  1, notes on rounds 2+) and the four critique sub-fields; it still carries
+  exactly three slots (INV-FORMAT-1).
+- Phase 1 and Phase 2 soft/hard caps, batched escalation, the single cap
+  question, trash-not-delete cleanup and the non-git gate scoping from the
+  6.x main line are preserved; the v6 test harness (`make test`, 8 suites)
+  runs in CI alongside the existing lint jobs.
+- Tests: validate-output 19 → 66 assertions, prompt-lint 28 → 44, doc-lint
+  requires the seven new invariants.
+
 
 - `validate-output` consolidated to one awk scan per file plus one jq filter:
   70 lines (from 127) and 4–5 processes per call (from ~25), with the response

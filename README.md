@@ -73,13 +73,16 @@ ULTRABLITZ — Framework Agreed
   Gate & safety integrity: 20 — is the confirmation gate fail-closed?
   ...
 Theoretical Maximum: 96/100
+Attack Surface: gate bypass via a path the hook does not see; session state
+  mutated by a turn that later fails validation; ...
 
 ULTRABLITZ — Round 1 (soft target 5, hard cap 10)
 Score: 62/96
   Runtime contract fidelity & execution robustness: 14/25  RECONCILED
   ...
-Codex's Key Critiques:
-  UB-1 [CRITICAL] Claims stock-install executability while requiring a manual step
+Edge Case Sweep: 7/9 covered, UNCOVERED: concurrency → UB-3, N-A: migration-and-compat
+Ledger:
+  UB-1 [CRITICAL] Runtime contract fidelity — Claims stock-install executability while requiring a manual step — UNRESOLVED
   ...
 
 ULTRABLITZ — COMPLETE
@@ -89,7 +92,11 @@ Artifacts: in-flight/innovations/ultrablitz/self-blitz/debate-log.md
 ```
 
 That transcript is real: v6 of this skill was designed by running v5 against its
-own improvement plan.
+own improvement plan. v7 added what the transcript lacked: stable `UB-n` ids
+with a category per finding, a round-1 edge-case sweep, an admissibility bar
+for findings raised after round 1, a confirmation turn once the serious
+findings are closed, and a stalemate rule that reads the ledger rather than
+the score (`references/protocol-invariants.md`, INV-ID-1 through INV-TERM-5).
 
 ## Design
 
