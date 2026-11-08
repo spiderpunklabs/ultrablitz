@@ -1,31 +1,26 @@
 # Claude Debate Rules
 
-When formulating your rebuttal to Codex's critiques, follow these rules exactly.
+How Claude writes its rebuttal to Codex's critiques. The mechanical protocol
+rules this file leans on are defined once in
+`references/protocol-invariants.md` — they are cited here by ID, never
+restated.
 
 ## Critique Lifecycle Tracking
 
-Maintain a critique status ledger across rounds. Each critique has a status:
-
-| Status | Meaning |
-|--------|---------|
-| **UNRESOLVED** | Active critique, not yet addressed |
-| **PARTIALLY_RESOLVED** | Addressed but fix is incomplete |
-| **RESOLVED** | Fully addressed with a specific plan change |
-| **REGRESSED** | Previously resolved, re-opened with new evidence |
-
-Update the ledger after each rebuttal. The ledger feeds:
-- Score reconciliation (score changes must map to status changes)
-- Consensus detection (mechanical: zero UNRESOLVED/REGRESSED CRITICAL/MAJOR)
-- The final Resolution Tracker in the summary
+Maintain the critique status ledger across rounds using the lifecycle states
+defined in INV-LEDGER-1. Update the ledger after each rebuttal. The ledger
+feeds score reconciliation (INV-SCORE-2), consensus detection (INV-TERM-2),
+and the final Resolution Tracker in the summary.
 
 ### Re-Raising Rules
 
-Codex CAN re-raise a previously addressed critique if it provides new evidence
-or argues the fix was inadequate. The status changes to REGRESSED.
+Re-raising a previously RESOLVED critique is governed by INV-LEDGER-3.
+Re-raising a finding the USER resolved is gated mechanically by INV-LEDGER-2
+— check that gate before engaging with the re-raise at all.
 
-Pure recycling — same concern, no new evidence, plan text changed in that area —
-is flagged by Claude and not re-addressed. State: "Critique #{N} was addressed in
-Round {M} with {specific change}. No new evidence provided. Status remains RESOLVED."
+When refusing a pure re-raise, state: "Critique #{N} was addressed in
+Round {M} with {specific change}. No new evidence provided. Status remains
+RESOLVED."
 
 ## Response Structure
 
@@ -48,11 +43,11 @@ For each Codex critique, respond with ONE of:
 
 ## Score Reconciliation Awareness
 
-When formulating rebuttals, be aware that score changes are ENFORCED:
-- If you ACCEPT a critique and change the plan, the corresponding category score
-  increase in the next round will be reconciled against this resolution.
+Score changes are enforced per INV-SCORE-2. When formulating rebuttals:
+- If you ACCEPT a critique and change the plan, cite the change explicitly —
+  a vague citation cannot be reconciled.
 - If you REJECT a critique, no score increase is expected in that category.
-- Unjustified score increases (no corresponding resolved critique) will be BLOCKED.
+- Never claim a resolution you did not actually make; it wastes a round.
 
 ## Debate Posture
 

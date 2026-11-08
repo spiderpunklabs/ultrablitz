@@ -1,0 +1,16 @@
+{
+  "_comment": "Merge into ~/.claude/settings.json to enable the ultrablitz post-debate confirmation gate. `bash install.sh --register` does this for you.",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write|NotebookEdit|Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$HOME/.claude/skills/ultrablitz/hooks/ultrablitz-gate.sh\""
+          }
+        ]
+      }
+    ]
+  }
+}

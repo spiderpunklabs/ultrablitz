@@ -1,11 +1,53 @@
 # Structured Output Contract
 
-This contract is generated dynamically after Phase 1 (Framework Negotiation) completes.
-The categories and weights are populated from the agreed framework.
+## Phase 1 contract — interpolated as {FRAMEWORK_CONTRACT}
 
-**Important**: Codex does NOT return a `## SCORE` line. The total score is computed
-deterministically by Claude as the sum of category scores. This eliminates dual
-sources of truth.
+The single source of truth for the Phase 1 (Framework Negotiation) output shape.
+The Phase 1 prompt template (`framework-prompt.md`, used on every round)
+interpolates this block verbatim into its `<structured_output_contract>` tag,
+so round 1 and rounds 2+ demand the same shape.
+
+```
+Return your response in EXACTLY this format:
+
+## FRAMEWORK VERDICT: ACCEPT | REJECT | COUNTER-PROPOSE
+
+## CATEGORY ASSESSMENT:
+For each category:
+- {Category}: ACCEPT | REJECT | MODIFY
+  - If REJECT/MODIFY: why, and what to replace/change it with
+
+## WEIGHT ASSESSMENT:
+- Are the weights appropriate for this domain? If not, propose alternatives with justification.
+
+## THEORETICAL MAXIMUM:
+- Your position on the realistic maximum score for a plan in this domain, and why.
+- If you disagree with the proposed maximum, state yours with evidence.
+
+## MISSING DIMENSIONS:
+- Evaluation dimensions critical to this domain that the framework omits.
+- In rounds after the first, "- None." is a complete and legitimate answer.
+
+## PROPOSED CHANGES:
+{Only if REJECT or COUNTER-PROPOSE: your complete alternative or modified framework}
+
+## RATIONALE:
+{One paragraph: why this framework is or isn't appropriate for the domain}
+```
+
+## Phase 2 contract
+
+This contract is generated dynamically after Phase 1 (Framework Negotiation)
+completes. The categories and weights are populated from the agreed framework.
+It defines the SHAPE of Codex's output only; the scoring semantics live in
+`references/protocol-invariants.md`.
+
+**Important**: Codex does NOT return a `## SCORE` line. Per INV-SCORE-1, the
+authoritative total is computed by Claude from the category scores (capped at
+the theoretical max), so the contract deliberately contains no total slot —
+one source of truth. Malformed output is repaired within the bounds of
+INV-FORMAT-1, and validation is performed by the `validate-output` subcommand
+(INV-A9), not by ad-hoc parsing.
 
 ## Template
 
@@ -44,12 +86,14 @@ Do NOT include a total score line — it will be computed from your category sco
 Theoretical Maximum: 100
 ```
 
-This is labeled "GENERIC" when used. Framework negotiation is recommended for
-domain-specific evaluation.
+This is labeled "GENERIC" when used.
 
 ## `.ultrablitz.json` Config Schema
 
-Users can define a custom default framework in `.ultrablitz.json`:
+Users can define a custom default framework in `.ultrablitz.json`.
+
+**Lookup order**: the repo root first, then the current working directory —
+the first file found wins. These are the only two locations checked.
 
 ```json
 {
@@ -58,13 +102,15 @@ Users can define a custom default framework in `.ultrablitz.json`:
       { "name": "Category Name", "weight": 25, "definition": "What a high score means" }
     ],
     "max": 100
-  },
-  "codex_companion_path": "/path/to/codex-companion.mjs"
+  }
 }
 ```
+
+`default_framework` is the only supported key.
 
 Validation (applied before use):
 - `categories`: array of 3-6 objects, each with `name` (string), `weight` (integer > 0), `definition` (string)
 - Category weights must sum to 100
 - `max`: integer 50-100
 - Invalid config: warn user, fall back to generic 4x25
+- Unknown keys: warn and ignore (the framework itself is still used if valid)
