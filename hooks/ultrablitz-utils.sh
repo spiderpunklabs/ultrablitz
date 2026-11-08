@@ -522,8 +522,8 @@ cmd_validate_output() {
   # the final object: no shell arrays (bash-3.2 empty-"${a[@]}" trap), no
   # string-pasted JSON (S2), no duplicated baseline parser (S5).
   local out stream bstream=""
-  stream="$(ub_scan_output "$input")"
-  [ -n "$baseline" ] && [ -r "$baseline" ] && bstream="$(ub_scan_output "$baseline")"
+  stream="$(ub_scan_output "$input" "$last_id")"
+  [ -n "$baseline" ] && [ -r "$baseline" ] && bstream="$(ub_scan_output "$baseline" "$last_id")"
   out="$(printf '%s\n' "$stream" | jq -Rs --arg b "$bstream" --slurpfile c "$contract" \
     --argjson round "$round" --argjson lastId "$last_id" --argjson confirmOnly "$confirm_only" \
     --arg sweep "$UB_SWEEP_CLASSES" '
@@ -550,6 +550,8 @@ cmd_validate_output() {
     | (if $b == "" then null
        else {scores: (cats($br) | map(.score)), ncrit: (crit($br)[1] | tonumber), ided: ided($br),
              nided: (ided($br) | length),
+             nreal: ((ided($br) | length) + ([xs($br)[] | select(.id == "-" and (.ev + .im + .su) > 0)] | length)),
+             orphan: (crit($br)[7] | tonumber),
              broken: (((crit($br)[5] | tonumber) + (crit($br)[6] | tonumber) + (crit($br)[7] | tonumber)) > 0),
              owed: (if $round == 1
                     then (ided($br) | map(.id)) as $bids
@@ -612,12 +614,16 @@ cmd_validate_output() {
          then ["repair changed scores: was [" + ($base.scores | join(",")) + "] now ["
                + ($cats | map(.score) | join(",")) + "]"] else [] end)
       # A broken baseline parse (lost header, orphan fields, pseudo-entry)
-      # mis-counted, so the repair is held only to "no id-bearing critique dropped";
-      # the per-id checks below still pin the severity and Category of every id.
-      + (if $base != null and $base.ncrit > 0
-            and ($ncrit < $base.nided or (($base.broken | not) and $ncrit > $base.ncrit + $base.owed))
-         then ["repair changed critique count: was \($base.ncrit) now \($ncrit)"
-               + (if $base.owed > 0 then " (at most \($base.owed) may be added for UNCOVERED sweep rows)" else "" end)]
+      # mis-counted: the repair must keep every entry that carried fields and
+      # may add one entry per orphan field line (a lost header leaves at least
+      # one). The per-id checks below still pin the severity and Category of every id.
+      + (if $base != null and $base.ncrit > 0 then
+           (if $ncrit < $base.nreal
+            then ["repair changed critique count: was \($base.ncrit) now \($ncrit): every critique that carried fields must be kept"]
+            elif $ncrit > $base.ncrit + $base.owed + (if $base.broken then $base.orphan else 0 end)
+            then ["repair changed critique count: was \($base.ncrit) now \($ncrit)"
+                  + (if $base.owed > 0 then " (at most \($base.owed) may be added for UNCOVERED sweep rows)" else "" end)]
+            else [] end)
          else [] end)
       + (if $base == null then [] else
            [$base.ided[] | . as $be | ($ided | map(select(.id == $be.id)) | .[0]) as $now
@@ -783,11 +789,20 @@ cmd_render_contract() {
 # after the id. Anything else that carries a UB id or a severity tag inside
 # the CRITIQUES section is reported, never silently dropped (INV-ID-1).
 ub_scan_output() {
-  awk '
+  awk -v lastid="${2:-0}" '
+    # A bare column-0 mention that no field line confirmed: prose, unless it
+    # introduces an id above every id seen so far and above --last-id, which
+    # only a new finding would do. That one is reported, never dropped.
+    function droppend() {
+      if (pend == 1 && pendid > maxid && pendid > lastid + 0) {
+        flush(); n++; cur = "x"; cid = "-"; csev = "-"; unparsed++
+      }
+      pend = 0
+    }
     function flush() {
       if (cur != "")
         printf "X\t%s\t%s\t%s\t%d\t%d\t%d\t%d\t%d\n", cid, csev, ccat, cev, cim, csu, ctrig, cmiss
-      cur = ""; cid = ""; csev = ""; ccat = ""; cev = 0; cim = 0; csu = 0; ctrig = 0; cmiss = 0
+      cur = ""; cid = ""; csev = ""; ccat = ""; cev = 0; cim = 0; csu = 0; ctrig = 0; cmiss = 0; nf = 0
       split("", seen)
     }
     function trim(v) { gsub(/^[[:space:]]+|[[:space:]]+$/, "", v); return v }
@@ -801,7 +816,8 @@ ub_scan_output() {
     /^#+[[:space:]]*EDGE CASE SWEEP/ { h5 = 1 }
     /^#+[[:space:]]*NOTES/ { h6 = 1 }
     /^#+[[:space:]]*(CATEGORY SCORES|CRITIQUES|STRENGTHS|VERDICT|EDGE CASE SWEEP|NOTES)/ {
-      if (inc) flush(); inblk = 0; inc = 0; insw = 0
+      if (inc) { droppend(); flush() }
+      inblk = 0; inc = 0; insw = 0
     }
     /^#+[[:space:]]*CATEGORY SCORES/ { inblk = 1; next }
     /^#+[[:space:]]*CRITIQUES/ { inc = 1; next }
@@ -848,18 +864,19 @@ ub_scan_output() {
         if (isfield) {
           flush(); n++; cur = "x"; cid = "-"; csev = "-"
           if (pend == 1) unparsed++; else legacy++
-        }
-        pend = 0
+          pend = 0
+        } else droppend()
       }
       if (nu ~ /^UB-[0-9]+:?[[:space:]]*\[(CRITICAL|MAJOR|MINOR)\]/) {
         flush(); n++; cur = "x"
-        cid = ubnum(nu)
+        cid = ubnum(nu); if (cid > maxid) maxid = cid
         match(nu, /\[(CRITICAL|MAJOR|MINOR)\]/); csev = substr(nu, RSTART + 1, RLENGTH - 2)
         next
       }
       if (nu ~ /^(NONE|NO FINDINGS|NO CRITIQUES)\.?$/ && (cur == "" || $0 !~ /^[[:space:]]/)) { none = 1; next }
       if (isfield) {
         if (cur == "") { orphan++; next }
+        nf++
         v = trim(substr(nl, index(nl, ":") + 1))
         # A field seen twice in one entry means the header of the next entry
         # was not recognised: its fields would otherwise be credited to this
@@ -892,11 +909,14 @@ ub_scan_output() {
           if (kind == 1) unparsed++; else legacy++
           next
         }
-        if (kind) { pend = kind; next }
+        # A restatement of the entry just opened ("UB-1 is still MAJOR: ...")
+        # before its fields is prose, not a second header.
+        if (kind == 1 && cur != "" && cid == ubnum(nu) && nf == 0) next
+        if (kind) { pend = kind; pendid = ubnum(nu); next }
       }
     }
     END {
-      if (inc) flush()
+      if (inc) { droppend(); flush() }
       printf "M\t%d\n", ne + 0
       printf "H\t%d\t%d\t%d\t%d\t%d\t%d\n", h1 + 0, h2 + 0, h3 + 0, h4 + 0, h5 + 0, h6 + 0
       printf "N\t%d\n", none + 0

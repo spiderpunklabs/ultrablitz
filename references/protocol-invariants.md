@@ -279,8 +279,9 @@ one exception is round 1: a repair may add one critique per UNCOVERED sweep row
 that named none, or named an id absent from the response (INV-SWEEP-1), since
 adding it is the only shape-preserving fix. When the pre-repair parse was
 itself broken (a header not recognised, field lines outside any entry), the
-pre-repair count is unreliable, so the repair is held only to dropping no id'd
-critique; the per-id severity and Category checks still apply. Rounds that went through repair are recorded with
+pre-repair count is unreliable, so the repair is held instead to keeping every
+entry that carried fields and adding at most one entry per stray field line;
+the per-id severity and Category checks still apply. Rounds that went through repair are recorded with
 `formatRepair:true` and listed in the debate log.
 
 ## Failure Classes

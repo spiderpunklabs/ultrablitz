@@ -652,20 +652,49 @@ mk "$good"
 out="$(v --baseline "$SANDBOX/base.md")"; rc=$?
 assert_rc "$rc" 0
 
-t "a restatement between a header and its fields is repairable"
-compose --crit1 'UB-1 **[MAJOR]** Something
+t "a restatement between a header and its own fields is prose"
+mk "$(compose --crit1 'UB-1 **[MAJOR]** Something
 UB-1 is still MAJOR: the rebuttal moved the check but not the lock.
    - Category: Gate & safety integrity
    - Evidence: e
    - Impact: i
    - Suggestion: s
-' > "$SANDBOX/base.md"
-cp "$SANDBOX/base.md" "$SANDBOX/out.md"
+')"
+out="$(v)"
+assert_json "$out" '"\(.ok) \(.critiqueCount)"' 'true 1'
+
+t "a bare fieldless line introducing an unseen id is reported, not dropped"
+mk "$(compose --crit2 'UB-2 — CRITICAL — lock not held across the write
+')"
 out="$(v)"; rc=$?
 assert_rc "$rc" 1
+assert_contains "$out" "not in the form UB-n"
+t "the same line naming an id already in play is prose"
+mk "$(compose --crit2 'UB-3 — CRITICAL — unchanged since round 1
+')"
+out="$(v --round 2 --last-id 3)"
+assert_json "$out" '"\(.ok) \(.critiqueCount)"' 'true 1'
+
+t "a repair may not drop an unrecognised entry that carried fields"
+compose --crit2 'UB-2 — [CRITICAL] Second
+   - Category: Operability & maintenance economics
+   - Evidence: e
+   - Impact: i
+   - Suggestion: s
+' > "$SANDBOX/base.md"
 mk "$good"
 out="$(v --baseline "$SANDBOX/base.md")"; rc=$?
-assert_rc "$rc" 0
+assert_rc "$rc" 1
+assert_contains "$out" "every critique that carried fields must be kept"
+
+t "a repair against a broken baseline may not add beyond its stray field lines"
+compose --crit2 '- [MINOR] items were folded into NOTES.
+' > "$SANDBOX/base.md"
+mk "$(compose --crit2 "$crit2$(printf '%s' "$crit2" | sed 's/UB-2/UB-3/')
+")"
+out="$(v --baseline "$SANDBOX/base.md")"; rc=$?
+assert_rc "$rc" 1
+assert_contains "$out" "repair changed critique count: was 2 now 3"
 
 t "round 1: a repair may add the critique an UNCOVERED row pointed at a missing id"
 compose --sweep "$(printf '%s\n' "$sweep_txt" | sed 's/see UB-1/see UB-9/')
